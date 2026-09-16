@@ -57,7 +57,8 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	wait_info.pSemaphores    = &m_semaphore;
 	wait_info.pValues        = &tick;
 
-	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
+	constexpr uint64_t kWaitTimeoutNs = 5'000'000'000ull;
+	const auto result = m_graphics.device.waitSemaphores(&wait_info, kWaitTimeoutNs);
 	if (result != vk::Result::eSuccess) {
 		LOGF("MasterSemaphore: vkWaitSemaphores failed: %s (%d), tick=%" PRIu64 "\n",
 		     vk::to_string(result).c_str(), static_cast<int>(result), tick);

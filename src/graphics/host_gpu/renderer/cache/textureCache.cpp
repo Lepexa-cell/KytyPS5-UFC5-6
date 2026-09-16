@@ -41,6 +41,11 @@ constexpr uint64_t NumFramesBeforeRemoval = 32;
 	return vk::blockSize(a) == vk::blockSize(b);
 }
 
+[[nodiscard]] bool IsPackedFloatFormat(vk::Format format) noexcept {
+	return format == vk::Format::eB10G11R11UfloatPack32 ||
+	       format == vk::Format::eE5B9G9R9UfloatPack32;
+}
+
 [[nodiscard]] bool IsPresentableColorFormat(vk::Format format) noexcept {
 	switch (format) {
 		case vk::Format::eR8G8B8A8Unorm:
@@ -1685,7 +1690,8 @@ vk::ImageView TextureCache::FindTexture(ImageId id, const ImageDesc& desc) {
 	if (desc.type == BindingType::Texture && image.backing.format != vk::Format::eUndefined &&
 	    view_info.format != vk::Format::eUndefined &&
 	    !ImageViewOps::ViewEncodingCompatible(image.backing.format, view_info.format) &&
-	    SameTexelBlockSize(image.backing.format, view_info.format)) {
+	    SameTexelBlockSize(image.backing.format, view_info.format) &&
+	    !IsPackedFloatFormat(view_info.format) && !IsPackedFloatFormat(image.backing.format)) {
 		static std::atomic<uint32_t> encoding_logs = 0;
 		if (encoding_logs.fetch_add(1, std::memory_order_relaxed) < 24) {
 			LOGF("TextureCache: sampling backing encoding: backing format %d vs descriptor format %d addr=0x%016" PRIx64
@@ -2332,7 +2338,7 @@ void TextureCache::RunGarbageCollector() {
 		//                           original `160` may be deliberate anti-thrash.
 		static const bool fix_budget = [] {
 			const char* env = std::getenv("KYTY_TEXGC_BUDGET_FIX");
-			return env != nullptr && env[0] == '1';
+			return env == nullptr || env[0] != '0';
 		}();
 		static const bool fix_age_order = [] {
 			const char* env = std::getenv("KYTY_TEXGC_AGE_FIX");

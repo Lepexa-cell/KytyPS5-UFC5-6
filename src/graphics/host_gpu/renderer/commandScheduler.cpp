@@ -473,6 +473,10 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	FrameWorkScope frame_work(FrameWorkKind::Submit);
 	EXIT_IF(m_command.IsInvalid());
+	if (DeviceLost()) {
+		m_command.m_buffer = nullptr;
+		return m_master.CurrentTick();
+	}
 	EXIT_IF(submit.num_wait_semaphores > SubmitInfo::MaxSemaphores ||
 	        submit.num_signal_semaphores >= SubmitInfo::MaxSemaphores);
 
@@ -513,6 +517,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 		                  m_command.m_debug_arg1, m_command.m_debug_arg2, m_command.m_debug_arg3,
 		                  m_command.m_debug_arg4);
 		if (result == vk::Result::eErrorDeviceLost || result == vk::Result::eTimeout) {
+			m_device_lost.store(true, std::memory_order_release);
 			LOGF("vkQueueSubmit recovery: dropping failed command after %s\n",
 			     vk::to_string(result).c_str());
 		}
@@ -651,7 +656,13 @@ bool CommandScheduler::SubmitTransferReadback(
 
 	{
 		Common::LockGuard queue_lock(m_graphics.transfer_queue_mutex);
-		if (m_graphics.transfer_queue.submit(1, &submit, nullptr) != vk::Result::eSuccess) {
+		const auto result = m_graphics.transfer_queue.submit(1, &submit, nullptr);
+		if (result != vk::Result::eSuccess) {
+			ReportVulkanFatal("vkQueueSubmit[transfer]", result, transfer_tick, 0, 0, 0, 0, 0, 0,
+			                  producer_tick);
+			if (result == vk::Result::eErrorDeviceLost || result == vk::Result::eTimeout) {
+				m_device_lost.store(true, std::memory_order_release);
+			}
 			return false;
 		}
 	}

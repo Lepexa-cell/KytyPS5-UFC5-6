@@ -467,7 +467,15 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	const bool                   fullscreen_cs =
 	    !indirect && thread_group_x >= 200 && thread_group_y >= 100 && thread_group_z <= 1;
 	const uint64_t shader_hash = program.shader_hash;
-	const bool     skip_cs     = ShouldSkipComputeHash(shader_hash);
+	// The captured UFC5 CS is the wave64/GDS dispatch from _Shaders/hang_cs. It has already
+	// been proven to TDR on wave32-only hosts; do not submit it unless explicitly re-enabled
+	// for a diagnostic run.
+	static const bool run_known_hang_cs = [] {
+		const char* value = std::getenv("KYTY_RUN_HANG_CS");
+		return value != nullptr && std::strcmp(value, "0") != 0;
+	}();
+	const bool     skip_cs     = !run_known_hang_cs &&
+	                         (shader_hash == kUfcHangCsHash || ShouldSkipComputeHash(shader_hash));
 	const bool     watch_cs =
 	    shader_hash == kUfcHangCsHash || skip_cs ||
 	    EnvListContainsHash("KYTY_DUMP_SHADER_HASH", shader_hash);
@@ -514,10 +522,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (watch_cs || ((large_workgroup || has_sampler) &&
 	                 dispatch_log_count.fetch_add(1, std::memory_order_relaxed) < 512) ||
 	    (fullscreen_cs && fullscreen_log_count.fetch_add(1, std::memory_order_relaxed) < 32)) {
-		LOGF("GraphicsRenderDispatchDirect: frame=%u shader=0x%016" PRIx64
-		     " hash=0x%016" PRIx64 " groups=%ux%ux%u mode=0x%08" PRIx32 " local=%ux%ux%u "
+		LOGF("GraphicsRenderDispatchDirect: frame=%u submit=%" PRIu64
+		     " shader=0x%016" PRIx64 " hash=0x%016" PRIx64 " groups=%ux%ux%u mode=0x%08" PRIx32 " local=%ux%ux%u "
 		     "buffers=%zu textures=%zu sampled=%zu storage=%zu samplers=%zu push=%u%s\n",
-		     frame_num, sh_ctx.GetCs().cs_regs.data_addr, shader_hash, thread_group_x,
+		     frame_num, submit_id, sh_ctx.GetCs().cs_regs.data_addr, shader_hash, thread_group_x,
 		     thread_group_y, thread_group_z, mode, input_info.threads_num[0],
 		     input_info.threads_num[1], input_info.threads_num[2], program.info.buffers.size(),
 		     program.info.images.size(), sampled_images,

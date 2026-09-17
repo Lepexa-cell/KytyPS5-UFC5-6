@@ -83,30 +83,6 @@ bool IsPacked10Unorm(vk::Format format) {
 	                  static_cast<int>(exponent) - bias);
 }
 
-[[nodiscard]] bool IsPresenterSceneColor(const Image& image) noexcept {
-	const auto extent = image.backing.extent;
-	if (extent.width < 1280u || extent.height < 720u) {
-		return false;
-	}
-	if (image.info.IsDepth() || image.info.metadata.kind == ImageMetadataKind::Htile ||
-	    image.usage.depth_target || image.backing.image == nullptr) {
-		return false;
-	}
-	switch (image.backing.format) {
-		case vk::Format::eR8G8B8A8Unorm:
-		case vk::Format::eR8G8B8A8Srgb:
-		case vk::Format::eB8G8R8A8Unorm:
-		case vk::Format::eB8G8R8A8Srgb:
-		case vk::Format::eA2B10G10R10UnormPack32:
-		case vk::Format::eA2R10G10B10UnormPack32:
-		case vk::Format::eB10G11R11UfloatPack32:
-		case vk::Format::eR16G16B16A16Sfloat:
-		case vk::Format::eR16G16B16A16Unorm:
-		case vk::Format::eR32G32B32A32Sfloat: return true;
-		default: return false;
-	}
-}
-
 void WriteBmpBgra(const std::filesystem::path& path, uint32_t width, uint32_t height,
                   const std::vector<uint8_t>& bgra) {
 	const uint32_t pixel_bytes = width * height * 4u;
@@ -1292,8 +1268,6 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 
 	auto&  cache  = m_impl->renderer.GetTextureCache();
 	Image* source = &scanout;
-	constexpr uint64_t kUfcHudAddress   = 0x0000001114000000ull;
-	constexpr uint64_t kUfcSceneAddress = 0x0000001162c00000ull;
 	static std::atomic<uint32_t> ufc_present_logs = 0;
 	const auto consider = [&](ImageId id, const char* tag, bool allow_scanout_addr) {
 		if (!id || source != &scanout) {
@@ -1308,7 +1282,8 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		                            candidate.info.data.address == 0x000000111b800000ull)) {
 			return;
 		}
-		if (!candidate.IsGpuModified() || !IsPresenterSceneColor(candidate)) {
+		if (!candidate.IsGpuModified() || candidate.backing.image == nullptr ||
+		    candidate.backing.extent.width < 1280u || candidate.backing.extent.height < 720u) {
 			return;
 		}
 		source = &candidate;
@@ -1327,19 +1302,12 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	// Retain the early-menu fallbacks only when scanout has no current GPU contents.
 	const bool native_scanout = scanout.SafeToDownload() &&
 	    (scanout.usage.storage || scanout.usage.render_target);
-	const bool hud_scanout = scanout.info.data.address == kUfcHudAddress;
-	if (hud_scanout) {
-		consider(cache.FindImageFromRange(kUfcSceneAddress, 0x0000000000870000ull, false, true),
-		         "scene under HUD", false);
-	}
-	if (!native_scanout || hud_scanout) {
-		consider(cache.FindImageFromRange(info.data.address, 0x0000000000870000ull, false, true),
+	if (!native_scanout) {
+		consider(cache.FindImageFromRange(info.data.address, 0x0000000000870000ull, false),
 		         "flip alias", true);
 		consider(cache.FindLastPresentableColor(), "last color", false);
-		if (!hud_scanout) {
-			consider(cache.FindImageFromRange(kUfcSceneAddress, 0x0000000000870000ull, false, true),
-			         "compositor color", false);
-		}
+		consider(cache.FindImageFromRange(0x0000001162c00000ull, 0x0000000000870000ull, false),
+		         "compositor color", false);
 	}
 	auto& image = *source;
 	if (image.backing.format == vk::Format::eUndefined) {

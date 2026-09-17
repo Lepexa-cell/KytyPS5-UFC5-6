@@ -1569,8 +1569,7 @@ void TextureCache::UpdateImage(ImageId id) {
 	RefreshImage(id);
 }
 
-ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool ensure_valid,
-										 bool presentable_color_only) {
+ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool ensure_valid) {
 	if (!GuestRange {address, size}.Valid()) {
 		return {};
 	}
@@ -1593,17 +1592,6 @@ ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool e
 	int     best_score = -1;
 	for (const auto id: matches) {
 		const auto& image = m_slot_images[id];
-		if (presentable_color_only) {
-			const auto extent = image.backing.extent;
-			if (!image.IsGpuModified() || extent.width < 1280u || extent.height < 720u ||
-			    image.info.IsDepth() ||
-			    image.info.metadata.kind == ImageMetadataKind::Htile ||
-			    image.usage.depth_target || image.usage.video_out ||
-			    (!image.usage.render_target && !image.usage.storage) ||
-			    !IsPresentableColorFormat(image.backing.format)) {
-				continue;
-			}
-		}
 		int         score = 0;
 		if (image.info.data.size == size) {
 			score += 4;
@@ -1658,34 +1646,15 @@ void TextureCache::NotePresentableColor(const Image& image) {
 ImageId TextureCache::FindLastPresentableColor() {
 	uint64_t address = 0;
 	uint64_t size    = 0;
-	ImageId  fallback {};
-	uint64_t fallback_tick = 0;
 	{
 		std::scoped_lock lock {m_lock};
 		address = m_presentable_address;
 		size    = m_presentable_size;
-		m_slot_images.ForEach([&](ImageId id, const Image& image) {
-			const auto extent = image.backing.extent;
-			if (!image.IsGpuModified() || image.info.IsDepth() ||
-			    image.info.metadata.kind == ImageMetadataKind::Htile || image.usage.depth_target ||
-			    image.usage.video_out ||
-			    (!image.usage.render_target && !image.usage.storage) ||
-			    extent.width < 1280u || extent.height < 720u ||
-			    !IsPresentableColorFormat(image.backing.format) || image.backing.image == nullptr) {
-				return;
-			}
-			if (image.tick_accessed_last >= fallback_tick) {
-				fallback_tick = image.tick_accessed_last;
-				fallback      = id;
-			}
-		});
 	}
-	if (address != 0 && size != 0) {
-		if (const auto selected = FindImageFromRange(address, size, false); selected) {
-			return selected;
-		}
+	if (address == 0 || size == 0) {
+		return {};
 	}
-	return fallback;
+	return FindImageFromRange(address, size, false);
 }
 
 vk::ImageView TextureCache::FindTexture(ImageId id, const ImageDesc& desc) {
@@ -1815,7 +1784,6 @@ void TextureCache::CommitGpuWrite(Image& image) {
 	if (image.depth_id || image.backing.image == nullptr) {
 		EXIT("TextureCache: stencil association cannot own image contents\n");
 	}
-	image.tick_accessed_last = m_scheduler.CurrentTick();
 	image.ClearBufferModified();
 	if (image.IsCpuDirty()) {
 		image.RefreshComplete();

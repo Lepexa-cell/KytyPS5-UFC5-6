@@ -16,7 +16,6 @@
 #include "graphics/host_gpu/pageManager.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
-#include "libs/errno.h"
 #include "loader/elf.h"
 #include "loader/gamePatch.h"
 #include "loader/jit.h"
@@ -25,6 +24,7 @@
 #include "loader/x64InstructionEmulator.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -138,6 +138,12 @@ static std::atomic_uint32_t             g_unresolved_stub_call_log_count {0};
 static std::vector<uint64_t>            g_unresolved_stub_thunk_pages;
 static uint64_t                         g_unresolved_stub_thunk_offset = 0;
 static constexpr uint64_t               UNRESOLVED_STUB_PAGE_SIZE      = 4096;
+
+alignas(16) static std::array<uint8_t, 0x200> g_dummy_net_context {};
+
+static KYTY_SYSV_ABI uint64_t DummyNetContext() {
+	return reinterpret_cast<uint64_t>(g_dummy_net_context.data());
+}
 
 static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id);
 
@@ -323,11 +329,12 @@ static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id) {
 		}
 
 		// UFC asks for a Net_v1.1 context helper that is absent from the current
-		// network shim. Return the platform's explicit "not initialized" status
-		// instead of the generic zero return, which the caller treats as a context
-		// pointer and dereferences.
+		// network shim. The unresolved thunk treats a nonzero return as a function
+		// address, so returning a negative SCE error here would jump to 0xffffffff...
+		// and crash. Return a small ABI-compatible function that provides a stable
+		// dummy context instead.
 		if (nid == "zJGf8xjFnQE") {
-			return static_cast<uint64_t>(static_cast<int64_t>(Libs::Network::NET_ERROR_ENOTINIT));
+			return reinterpret_cast<uint64_t>(DummyNetContext);
 		}
 	}
 

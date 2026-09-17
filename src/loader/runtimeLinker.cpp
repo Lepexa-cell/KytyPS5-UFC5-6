@@ -16,6 +16,7 @@
 #include "graphics/host_gpu/pageManager.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
+#include "libs/errno.h"
 #include "loader/elf.h"
 #include "loader/gamePatch.h"
 #include "loader/jit.h"
@@ -319,6 +320,14 @@ static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id) {
 			}
 
 			return resolved.vaddr;
+		}
+
+		// UFC asks for a Net_v1.1 context helper that is absent from the current
+		// network shim. Return the platform's explicit "not initialized" status
+		// instead of the generic zero return, which the caller treats as a context
+		// pointer and dereferences.
+		if (nid == "zJGf8xjFnQE") {
+			return static_cast<uint64_t>(static_cast<int64_t>(Libs::Network::NET_ERROR_ENOTINIT));
 		}
 	}
 

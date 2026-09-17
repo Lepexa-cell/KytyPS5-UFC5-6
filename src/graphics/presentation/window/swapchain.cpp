@@ -1292,6 +1292,8 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 
 	auto&  cache  = m_impl->renderer.GetTextureCache();
 	Image* source = &scanout;
+	constexpr uint64_t kUfcHudAddress   = 0x0000001114000000ull;
+	constexpr uint64_t kUfcSceneAddress = 0x0000001162c00000ull;
 	static std::atomic<uint32_t> ufc_present_logs = 0;
 	const auto consider = [&](ImageId id, const char* tag, bool allow_scanout_addr) {
 		if (!id || source != &scanout) {
@@ -1325,12 +1327,19 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	// Retain the early-menu fallbacks only when scanout has no current GPU contents.
 	const bool native_scanout = scanout.SafeToDownload() &&
 	    (scanout.usage.storage || scanout.usage.render_target);
-	if (!native_scanout) {
+	const bool hud_scanout = scanout.info.data.address == kUfcHudAddress;
+	if (hud_scanout) {
+		consider(cache.FindImageFromRange(kUfcSceneAddress, 0x0000000000870000ull, false, true),
+		         "scene under HUD", false);
+	}
+	if (!native_scanout || hud_scanout) {
 		consider(cache.FindImageFromRange(info.data.address, 0x0000000000870000ull, false, true),
 		         "flip alias", true);
 		consider(cache.FindLastPresentableColor(), "last color", false);
-		consider(cache.FindImageFromRange(0x0000001162c00000ull, 0x0000000000870000ull, false, true),
-		         "compositor color", false);
+		if (!hud_scanout) {
+			consider(cache.FindImageFromRange(kUfcSceneAddress, 0x0000000000870000ull, false, true),
+			         "compositor color", false);
+		}
 	}
 	auto& image = *source;
 	if (image.backing.format == vk::Format::eUndefined) {

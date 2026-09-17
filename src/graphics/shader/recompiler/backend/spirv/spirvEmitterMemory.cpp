@@ -928,6 +928,11 @@ void StoreFormattedInBounds(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
                             uint32_t data) {
 	if (component >= plan.info.component_count) return;
 	const auto bits = plan.info.component_bits[component];
+	if (plan.info.type == Format::ComponentType::Snorm && bits == 16u) {
+		const auto value = EmitBitCastF32U32(ctx.state, data);
+		data = EmitPackSnorm2x16(
+		    ctx.state, EmitCompositeConstructF32x2(ctx.state, value, ConstantF32Value(ctx.state, 0.0f)));
+	}
 	if (bits == 8u || bits == 16u) {
 		StoreSubwordInBounds(ctx, mem, plan.resource, plan.addresses[component],
 		                     plan.indices[component], bits, data);

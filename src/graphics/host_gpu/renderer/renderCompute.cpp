@@ -354,6 +354,9 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
                                     uint32_t thread_group_x, uint32_t thread_group_y,
                                     uint32_t thread_group_z, uint32_t mode,
                                     uint64_t indirect_args_addr) {
+	if (m_context.GetCommandScheduler().DeviceLost()) {
+		return;
+	}
 	EXIT_IF(buffer.IsInvalid());
 	// The group counts are unknown on the host in this mode, so every decision that reads
 	// them is skipped rather than made on zeros.
@@ -376,6 +379,23 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 
 	if (!ShaderAddressValid(sh_ctx.GetCs().cs_regs.data_addr)) {
+		return;
+	}
+	// This exact menu dispatch is the one that survives the known hang-CS filters and
+	// reaches vkQueueSubmit with 4096 groups on the UFC5 menu path. Keep it out of the
+	// queue by default; KYTY_RUN_MENU_HANG_CS=1 re-enables it for capture/debugging.
+	static const bool run_menu_hang_cs = [] {
+		const char* value = std::getenv("KYTY_RUN_MENU_HANG_CS");
+		return value != nullptr && std::strcmp(value, "0") != 0;
+	}();
+	if (!run_menu_hang_cs && sh_ctx.GetCs().cs_regs.data_addr == 0x0000001120100100ull &&
+	    thread_group_x == 4096u && thread_group_y == 1u && thread_group_z == 1u &&
+	    mode == 97u) {
+		LOGF("GraphicsRenderDispatchDirect: skipping menu hang CS addr=0x%016" PRIx64
+		     " groups=%ux%ux%u mode=%u submit=%" PRIu64 "\n",
+		     sh_ctx.GetCs().cs_regs.data_addr, thread_group_x, thread_group_y, thread_group_z,
+		     mode, submit_id);
+		ResetBindings();
 		return;
 	}
 	constexpr uint32_t DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS = 1u << 5u;

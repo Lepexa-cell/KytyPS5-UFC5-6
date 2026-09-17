@@ -1569,7 +1569,8 @@ void TextureCache::UpdateImage(ImageId id) {
 	RefreshImage(id);
 }
 
-ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool ensure_valid) {
+ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool ensure_valid,
+										 bool presentable_color_only) {
 	if (!GuestRange {address, size}.Valid()) {
 		return {};
 	}
@@ -1592,6 +1593,18 @@ ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool e
 	int     best_score = -1;
 	for (const auto id: matches) {
 		const auto& image = m_slot_images[id];
+		if (presentable_color_only) {
+			const auto extent = image.backing.extent;
+			const bool full_extent =
+			    (extent.width == 1600u && extent.height == 900u) ||
+			    (extent.width == 1920u && extent.height == 1080u);
+			if (!full_extent || image.info.IsDepth() || image.info.metadata.kind == ImageMetadataKind::Htile ||
+			    image.usage.depth_target || image.usage.video_out ||
+			    (!image.usage.render_target && !image.usage.storage) ||
+			    !IsPresentableColorFormat(image.backing.format)) {
+				continue;
+			}
+		}
 		int         score = 0;
 		if (image.info.data.size == size) {
 			score += 4;

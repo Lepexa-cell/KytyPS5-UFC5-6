@@ -45,7 +45,8 @@ public:
 	[[nodiscard]] ImageId       FindImage(ImageDesc& desc, bool exact_format = false);
 	void                        UpdateImage(ImageId id);
 	[[nodiscard]] ImageId       FindImageFromRange(uint64_t address, uint64_t size,
-	                                               bool ensure_valid = true);
+	                                               bool ensure_valid = true,
+	                                               bool presentable_color_only = false);
 	[[nodiscard]] ImageId       FindLastPresentableColor();
 	[[nodiscard]] vk::ImageView FindTexture(ImageId id, const ImageDesc& desc);
 	[[nodiscard]] vk::ImageView FindRenderTarget(ImageId id, const ImageDesc& desc);

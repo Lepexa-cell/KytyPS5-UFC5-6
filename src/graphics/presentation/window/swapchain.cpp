@@ -83,6 +83,31 @@ bool IsPacked10Unorm(vk::Format format) {
 	                  static_cast<int>(exponent) - bias);
 }
 
+[[nodiscard]] bool IsPresenterSceneColor(const Image& image) noexcept {
+	const auto extent = image.backing.extent;
+	if ((extent.width != 1600u || extent.height != 900u) &&
+	    (extent.width != 1920u || extent.height != 1080u)) {
+		return false;
+	}
+	if (image.info.IsDepth() || image.info.metadata.kind == ImageMetadataKind::Htile ||
+	    image.usage.depth_target || image.backing.image == nullptr) {
+		return false;
+	}
+	switch (image.backing.format) {
+		case vk::Format::eR8G8B8A8Unorm:
+		case vk::Format::eR8G8B8A8Srgb:
+		case vk::Format::eB8G8R8A8Unorm:
+		case vk::Format::eB8G8R8A8Srgb:
+		case vk::Format::eA2B10G10R10UnormPack32:
+		case vk::Format::eA2R10G10B10UnormPack32:
+		case vk::Format::eB10G11R11UfloatPack32:
+		case vk::Format::eR16G16B16A16Sfloat:
+		case vk::Format::eR16G16B16A16Unorm:
+		case vk::Format::eR32G32B32A32Sfloat: return true;
+		default: return false;
+	}
+}
+
 void WriteBmpBgra(const std::filesystem::path& path, uint32_t width, uint32_t height,
                   const std::vector<uint8_t>& bgra) {
 	const uint32_t pixel_bytes = width * height * 4u;
@@ -1282,8 +1307,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		                            candidate.info.data.address == 0x000000111b800000ull)) {
 			return;
 		}
-		if (!candidate.IsGpuModified() || candidate.backing.image == nullptr ||
-		    candidate.backing.extent.width < 1280u || candidate.backing.extent.height < 720u) {
+		if (!candidate.IsGpuModified() || !IsPresenterSceneColor(candidate)) {
 			return;
 		}
 		source = &candidate;
@@ -1303,10 +1327,10 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	const bool native_scanout = scanout.SafeToDownload() &&
 	    (scanout.usage.storage || scanout.usage.render_target);
 	if (!native_scanout) {
-		consider(cache.FindImageFromRange(info.data.address, 0x0000000000870000ull, false),
+		consider(cache.FindImageFromRange(info.data.address, 0x0000000000870000ull, false, true),
 		         "flip alias", true);
 		consider(cache.FindLastPresentableColor(), "last color", false);
-		consider(cache.FindImageFromRange(0x0000001162c00000ull, 0x0000000000870000ull, false),
+		consider(cache.FindImageFromRange(0x0000001162c00000ull, 0x0000000000870000ull, false, true),
 		         "compositor color", false);
 	}
 	auto& image = *source;

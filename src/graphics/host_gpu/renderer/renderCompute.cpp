@@ -378,6 +378,15 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (!ShaderAddressValid(sh_ctx.GetCs().cs_regs.data_addr)) {
 		return;
 	}
+	if (!indirect && thread_group_x == 256u && thread_group_y == 4434u && thread_group_z == 0u) {
+		LOGF("GraphicsRenderDispatchDirect: menu suspect dispatch shader_addr=0x%016" PRIx64
+		     " addr=0x%016" PRIx64 " mode=0x%08" PRIx32 "\n",
+		     sh_ctx.GetCs().cs_regs.data_addr, sh_ctx.GetCs().cs_regs.data_addr, mode);
+	}
+	if (!indirect && (thread_group_x == 0 || thread_group_y == 0 || thread_group_z == 0)) {
+		ResetBindings();
+		return;
+	}
 
 	constexpr uint32_t DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS = 1u << 5u;
 	constexpr uint32_t DISPATCH_INITIATOR_BASE_BITS             = 0x41u;
@@ -468,6 +477,11 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	const bool                   fullscreen_cs =
 	    !indirect && thread_group_x >= 200 && thread_group_y >= 100 && thread_group_z <= 1;
 	const uint64_t shader_hash = program.shader_hash;
+	if (!indirect && thread_group_x == 256u && thread_group_y == 4434u && thread_group_z == 0u) {
+		LOGF("GraphicsRenderDispatchDirect: menu suspect dispatch shader=0x%016" PRIx64
+		     " addr=0x%016" PRIx64 " mode=0x%08" PRIx32 "\n",
+		     shader_hash, sh_ctx.GetCs().cs_regs.data_addr, mode);
+	}
 	// The captured UFC5 CS is the wave64/GDS dispatch from _Shaders/hang_cs. It has already
 	// been proven to TDR on wave32-only hosts; do not submit it unless explicitly re-enabled
 	// for a diagnostic run.

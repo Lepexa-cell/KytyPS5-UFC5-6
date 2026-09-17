@@ -1245,6 +1245,9 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 	for (const auto& cfg_block: cfg.blocks) {
 		const auto typed_index = block_indices.at(cfg_block.id);
 		Translator translator(result, result.blocks[typed_index], vector_limit, options.wave_size);
+		if (cfg_block.exec_identity_entry) {
+			translator.SetExecIdentity();
+		}
 		for (uint32_t index = cfg_block.inst_begin; index < cfg_block.inst_end; index++) {
 			const auto& instruction = decoded.instructions[index];
 			if (IsCodeTableLoad(cfg, instruction.pc)) {

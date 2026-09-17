@@ -3041,6 +3041,17 @@ bool StructurizeImpl(Graph& graph, bool allow_clone = false) {
 			return false;
 		}
 		block.terminator.merge_block = merge;
+		if (block.terminator.condition == BranchCondition::ExecZero ||
+		    block.terminator.condition == BranchCondition::ExecNonZero) {
+			const auto body_id = block.terminator.condition == BranchCondition::ExecNonZero
+			                         ? block.terminator.true_block
+			                         : block.terminator.false_block;
+			auto* body = graph.FindBlock(body_id);
+			if (body != nullptr && body->id != merge && !body->terminator.loop_header &&
+			    body->predecessors.size() == 1 && body->predecessors.front() == block.id) {
+				body->exec_identity_entry = true;
+			}
+		}
 	}
 
 	return ValidateStructuredExits(graph);

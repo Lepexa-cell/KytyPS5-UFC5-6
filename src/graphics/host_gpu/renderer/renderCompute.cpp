@@ -47,6 +47,7 @@
 
 namespace Libs::Graphics {
 constexpr uint64_t kUfcHangCsHash = 0xea0aceac518ec52dull;
+constexpr uint64_t kUfcMenuHangCsHash = 0x142da6ee4d755d9eull;
 
 
 bool ParseHexU64(const char* text, uint64_t* out) {
@@ -475,7 +476,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		return value != nullptr && std::strcmp(value, "0") != 0;
 	}();
 	const bool     skip_cs     = !run_known_hang_cs &&
-	                         (shader_hash == kUfcHangCsHash || ShouldSkipComputeHash(shader_hash));
+	                         (shader_hash == kUfcHangCsHash || shader_hash == kUfcMenuHangCsHash ||
+	                          ShouldSkipComputeHash(shader_hash));
 	const bool     watch_cs =
 	    shader_hash == kUfcHangCsHash || skip_cs ||
 	    EnvListContainsHash("KYTY_DUMP_SHADER_HASH", shader_hash);

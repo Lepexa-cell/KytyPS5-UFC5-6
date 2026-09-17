@@ -30,7 +30,9 @@ vk::CommandBuffer CommandBuffer::Handle() const {
 }
 
 void CommandBuffer::Begin() {
-	EXIT_IF(m_rendering || IsInvalid());
+	if (m_rendering || IsInvalid()) {
+		return;
+	}
 	auto buffer = Handle();
 
 	vk::CommandBufferBeginInfo begin_info {};

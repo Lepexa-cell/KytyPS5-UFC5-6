@@ -85,8 +85,7 @@ bool IsPacked10Unorm(vk::Format format) {
 
 [[nodiscard]] bool IsPresenterSceneColor(const Image& image) noexcept {
 	const auto extent = image.backing.extent;
-	if ((extent.width != 1600u || extent.height != 900u) &&
-	    (extent.width != 1920u || extent.height != 1080u)) {
+	if (extent.width < 1280u || extent.height < 720u) {
 		return false;
 	}
 	if (image.info.IsDepth() || image.info.metadata.kind == ImageMetadataKind::Htile ||

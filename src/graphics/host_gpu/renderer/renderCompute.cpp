@@ -378,11 +378,6 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (!ShaderAddressValid(sh_ctx.GetCs().cs_regs.data_addr)) {
 		return;
 	}
-	if (!indirect && thread_group_x == 256u && thread_group_y == 4434u && thread_group_z == 0u) {
-		LOGF("GraphicsRenderDispatchDirect: menu suspect dispatch shader_addr=0x%016" PRIx64
-		     " addr=0x%016" PRIx64 " mode=0x%08" PRIx32 "\n",
-		     sh_ctx.GetCs().cs_regs.data_addr, sh_ctx.GetCs().cs_regs.data_addr, mode);
-	}
 	if (!indirect && (thread_group_x == 0 || thread_group_y == 0 || thread_group_z == 0)) {
 		ResetBindings();
 		return;

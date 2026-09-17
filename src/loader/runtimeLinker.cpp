@@ -139,10 +139,16 @@ static std::vector<uint64_t>            g_unresolved_stub_thunk_pages;
 static uint64_t                         g_unresolved_stub_thunk_offset = 0;
 static constexpr uint64_t               UNRESOLVED_STUB_PAGE_SIZE      = 4096;
 
-alignas(16) static std::array<uint8_t, 0x200> g_dummy_net_context {};
+static uint64_t g_dummy_dialog_context = 0;
 
-static KYTY_SYSV_ABI uint64_t DummyNetContext() {
-	return reinterpret_cast<uint64_t>(g_dummy_net_context.data());
+static KYTY_SYSV_ABI uint64_t DummyDialogContext() {
+	if (g_dummy_dialog_context == 0) {
+		g_dummy_dialog_context = Libs::LibKernel::Memory::AllocateRuntimeMemory(
+		    0, 0x200, Common::VirtualMemory::Mode::ReadWrite, "dummy_player_invitation_dialog");
+		EXIT_NOT_IMPLEMENTED(g_dummy_dialog_context == 0);
+		std::memset(reinterpret_cast<void*>(g_dummy_dialog_context), 0, 0x200);
+	}
+	return g_dummy_dialog_context;
 }
 
 static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id);
@@ -334,7 +340,10 @@ static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id) {
 		// and crash. Return a small ABI-compatible function that provides a stable
 		// dummy context instead.
 		if (nid == "zJGf8xjFnQE") {
-			return reinterpret_cast<uint64_t>(DummyNetContext);
+			return reinterpret_cast<uint64_t>(DummyDialogContext);
+		}
+		if (nid == "Zo52g0A1XDw" || nid == "gDm5a6GSE94") {
+			return reinterpret_cast<uint64_t>(DummyDialogContext);
 		}
 	}
 

@@ -70,7 +70,6 @@ struct BasicBlock {
 	uint32_t              end_pc     = 0;
 	uint32_t              inst_begin = 0;
 	uint32_t              inst_end   = 0;
-	bool                  exec_identity_entry = false;
 	std::vector<uint32_t> predecessors;
 	std::vector<uint32_t> successors;
 	std::vector<uint32_t> dominators;

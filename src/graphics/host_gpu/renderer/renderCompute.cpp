@@ -378,11 +378,6 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (!ShaderAddressValid(sh_ctx.GetCs().cs_regs.data_addr)) {
 		return;
 	}
-	if (!indirect && (thread_group_x == 0 || thread_group_y == 0 || thread_group_z == 0)) {
-		ResetBindings();
-		return;
-	}
-
 	constexpr uint32_t DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS = 1u << 5u;
 	constexpr uint32_t DISPATCH_INITIATOR_BASE_BITS             = 0x41u;
 	constexpr uint32_t DISPATCH_INITIATOR_MODIFIER_BITS         = 0xa038u;
@@ -420,6 +415,11 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	    (input_info.threads_num[0] * input_info.threads_num[1] * input_info.threads_num[2] >= 512);
 	const auto& program   = *input_info.stage.program;
 	const auto& resources = input_info.stage.resources;
+	if (!indirect && thread_group_x == 4096u && thread_group_y == 1u && thread_group_z == 1u) {
+		LOGF("GraphicsRenderDispatchDirect: device-loss suspect shader=0x%016" PRIx64
+		     " addr=0x%016" PRIx64 " mode=0x%08" PRIx32 "\n",
+		     program.shader_hash, sh_ctx.GetCs().cs_regs.data_addr, mode);
+	}
 	// UFC 5 builds its UI-presence mask from tiled colour-buffer metadata. Vulkan
 	// colour draws currently leave that guest metadata empty. For this exact 1080p
 	// mask kernel, conservatively visit every UI pixel in the later compositor;

@@ -741,6 +741,8 @@ uint32_t EmitBitcastF32ToU32(EmitterState& state, uint32_t value);
 
 uint32_t EmitBitcastU32ToF32(EmitterState& state, uint32_t value);
 
+uint32_t EmitPackSnorm2x16(EmitterState& state, uint32_t value);
+
 uint32_t EmitAndU32(EmitterState& state, uint32_t lhs, uint32_t rhs);
 
 uint32_t EmitLogicalAndBool(EmitterState& state, uint32_t lhs, uint32_t rhs);

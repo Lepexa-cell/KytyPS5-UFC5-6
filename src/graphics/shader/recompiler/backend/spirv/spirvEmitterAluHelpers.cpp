@@ -381,6 +381,13 @@ uint32_t EmitFAbsValue(EmitterState& state, uint32_t value) {
 	return ret;
 }
 
+uint32_t EmitPackSnorm2x16(EmitterState& state, uint32_t value) {
+	const auto ret = state.builder.AllocateId();
+	state.builder.AddFunction(
+	    {OpExtInst, TypeU32(state), ret, GlslStd450(state), GlslPackSnorm2x16, value});
+	return ret;
+}
+
 uint32_t EmitF16BitsToF32(EmitterState& state, uint32_t bits) {
 	const auto unpacked = state.builder.AllocateId();
 	const auto ret      = state.builder.AllocateId();

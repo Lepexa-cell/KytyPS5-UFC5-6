@@ -123,6 +123,10 @@ bool ReadbackLinearImagesEnabled() {
 	return g_config->readback_linear_images;
 }
 
+bool DepthBoundsTestDisabled() {
+	return g_config->disable_depth_bounds_test;
+}
+
 bool PlayGoHackEnabled() {
 	return g_config->playgo_hack_enabled;
 }

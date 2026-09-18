@@ -431,6 +431,11 @@ add_executable(shader_vertex_metadata_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(shader_vertex_metadata_tests PRIVATE ${inc_headers})
 
+add_executable(depth_bounds_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/DepthBoundsFallbackTests.cpp"
+)
+target_include_directories(depth_bounds_tests PRIVATE ${inc_headers})
+
 add_executable(resource_materialization_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ResourceMaterializationTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
@@ -541,6 +546,7 @@ if(BUILD_TESTING)
 	add_test(NAME page_manager COMMAND $<TARGET_FILE:page_manager_tests>)
 	add_test(NAME bit_array COMMAND $<TARGET_FILE:bit_array_tests>)
 	add_test(NAME shader_vertex_metadata COMMAND $<TARGET_FILE:shader_vertex_metadata_tests>)
+	add_test(NAME depth_bounds COMMAND $<TARGET_FILE:depth_bounds_tests>)
 	add_test(NAME resource_materialization COMMAND $<TARGET_FILE:resource_materialization_tests>)
 	add_test(NAME resource_tracking COMMAND $<TARGET_FILE:resource_tracking_tests>)
 	add_test(NAME event_queue_lifetime COMMAND $<TARGET_FILE:event_queue_lifetime_tests>)
@@ -599,6 +605,7 @@ if(BUILD_TESTING)
 		page_manager_tests
 		bit_array_tests
 		shader_vertex_metadata_tests
+		depth_bounds_tests
 		resource_materialization_tests
 		resource_tracking_tests
 		event_queue_lifetime_tests

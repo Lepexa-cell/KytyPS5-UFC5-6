@@ -149,6 +149,12 @@
           <property name="text"><string>Enable readback</string></property>
          </widget>
         </item>
+        <item row="7" column="1">
+         <widget class="QCheckBox" name="checkBox_depth_bounds">
+          <property name="toolTip"><string>Ignore guest depth-bounds culling (contact shadows) so a depth-culling pass cannot black out the scene</string></property>
+          <property name="text"><string>Disable depth bounds</string></property>
+         </widget>
+        </item>
        </layout>
       </widget>
      </item>

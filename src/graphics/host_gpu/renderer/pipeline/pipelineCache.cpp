@@ -8,6 +8,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
+#include "graphics/host_gpu/renderer/depthBoundsState.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -718,9 +719,24 @@ PipelineCache::Pipeline& PipelineCache::CreateGraphicsPipeline(
 	if (static_params.sample_shading_enable && !m_graphics.sample_rate_shading_enabled) {
 		EXIT("Pipeline: sample-rate shading is required but unsupported by the host\n");
 	}
-	static_params.depth_bounds_test_enable = depth.depth_bounds_test_enable;
-	static_params.depth_min_bounds         = depth.depth_min_bounds;
-	static_params.depth_max_bounds         = depth.depth_max_bounds;
+	// The guest depth registers feed the host depth-bounds test, which titles use as a
+	// depth-culling pass (contact shadows). Unusable ranges are neutralized here, at the last point
+	// before the values reach Vulkan, so a stray DB_DEPTH_BOUNDS_* register can never cull the
+	// whole scene.
+	const auto depth_bounds =
+	    SanitizeDepthBounds(depth.depth_bounds_test_enable, depth.depth_min_bounds,
+	                        depth.depth_max_bounds, Config::DepthBoundsTestDisabled());
+	if (depth.depth_bounds_test_enable && !depth_bounds.test_enable) {
+		static std::atomic_bool logged = false;
+		if (!logged.exchange(true, std::memory_order_relaxed)) {
+			LOGF("Pipeline: ignoring unusable depth bounds min=%f max=%f; the depth-culling pass "
+			     "would reject every fragment\n",
+			     depth.depth_min_bounds, depth.depth_max_bounds);
+		}
+	}
+	static_params.depth_bounds_test_enable = depth_bounds.test_enable;
+	static_params.depth_min_bounds         = depth_bounds.min_bounds;
+	static_params.depth_max_bounds         = depth_bounds.max_bounds;
 	static_params.stencil_test_enable      = depth.stencil_test_enable;
 	static_params.stencil_front            = depth.stencil_static_front;
 	static_params.stencil_back             = depth.stencil_static_back;

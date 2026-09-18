@@ -236,6 +236,7 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 		args << "--fullscreen";
 	}
 	args << "--readback-linear-images" << BoolArg(info.readback_linear_images);
+	args << "--disable-depth-bounds" << BoolArg(info.disable_depth_bounds_test);
 	args << "--vblank-frequency" << QString::number(info.vblank_frequency);
 	args << "--console-language" << QString::number(info.console_language);
 	args << "--vulkan-validation" << BoolArg(info.vulkan_validation_enabled);

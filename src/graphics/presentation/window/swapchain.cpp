@@ -19,6 +19,7 @@
 #include "graphics/presentation/window/windowInternal.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cinttypes>
@@ -1156,6 +1157,20 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
 	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
 	                           nullptr, 0, nullptr, 1, &to_transfer);
+
+	// Clear the destination swapchain image before blitting: the game source
+	// rarely covers the entire swapchain extent (letterboxing/scaling), and the
+	// swapchain image was transitioned from UNDEFINED rather than cleared, so
+	// without this pass the previous frame bleeds through the uncovered border.
+	vk::ClearColorValue clear_color(std::array<float, 4> {0.0f, 0.0f, 0.0f, 0.0f});
+	vk::ImageSubresourceRange clear_range {};
+	clear_range.aspectMask     = vk::ImageAspectFlagBits::eColor;
+	clear_range.baseMipLevel   = 0;
+	clear_range.levelCount     = 1;
+	clear_range.baseArrayLayer = 0;
+	clear_range.layerCount     = 1;
+	vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
+	                           &clear_color, 1, &clear_range);
 
 	vk::ImageBlit region {};
 	region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;

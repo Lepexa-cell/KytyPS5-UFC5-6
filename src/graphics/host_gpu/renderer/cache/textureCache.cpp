@@ -1588,30 +1588,51 @@ ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool e
 		}
 		matches.push_back(id);
 	}
+	// Descriptor-exact resolution (see ledger.md:586-589): replace the
+	// heuristics-based scoring with a strict, ordered preference that resolves
+	// the image alias at 0x1162c00000 unambiguously. The UFC 5 scene address
+	// is reused within a single frame for several resources that share the
+	// same address range but differ in extent/format/tile_mode. A size-only
+	// score ties on two 1600x900 images and picks the winner by iteration
+	// order, which lands on stale/mismatched backing. Match the descriptor the
+	// caller (presenter / resolve path) actually expects instead.
 	ImageId selected {};
-	int     best_score = -1;
 	for (const auto id: matches) {
 		const auto& image = m_slot_images[id];
-		int         score = 0;
-		if (image.info.data.size == size) {
-			score += 4;
+		const bool  size_ok       = image.info.data.size == size;
+		const bool  extent_ok     = image.info.extent.width > 0 && image.info.extent.height > 0;
+		const bool  gpu_modified    = image.IsGpuModified();
+		const bool  render_target   = image.usage.render_target;
+		const bool  valid_format    = image.backing.format != vk::Format::eUndefined;
+		const bool  render_tile     = image.info.tile_mode == Prospero::TileMode::kRenderTarget;
+		// Priority 1: exact descriptor match — size, extent, GPU-modified, render
+		// target, valid format, and render-target tile mode. This is the scene
+		// colour target that the presenter/blit path needs.
+		if (size_ok && extent_ok && gpu_modified && render_target && valid_format && render_tile) {
+			selected = id;
+			break;
 		}
-		if (image.IsGpuModified()) {
-			score += 8;
+		// Priority 2: same but accepting any tile mode (some alias images use a
+		// sampler tile layout yet are still valid present sources).
+		if (size_ok && extent_ok && gpu_modified && render_target && valid_format && !render_tile &&
+		    selected == ImageId {}) {
+			selected = id;
 		}
-		if (image.usage.render_target) {
-			score += 16;
+		// Priority 3: size + extent only, remember the first valid candidate.
+		if (size_ok && extent_ok && !selected) {
+			selected = id;
 		}
-		switch (image.backing.format) {
-			case vk::Format::eR8G8B8A8Unorm:
-			case vk::Format::eR8G8B8A8Srgb:
-			case vk::Format::eB8G8R8A8Unorm:
-			case vk::Format::eB8G8R8A8Srgb: score += 32; break;
-			default: break;
-		}
-		if (score > best_score) {
-			best_score = score;
-			selected   = id;
+	}
+	// Priority 4: if nothing matched on size, fall back to any GPU-modified image
+	// with a non-zero extent so the presenter still has *something* to show.
+	if (!selected) {
+		for (const auto id: matches) {
+			const auto& image = m_slot_images[id];
+			if (image.info.extent.width > 0 && image.info.extent.height > 0 &&
+			    image.IsGpuModified()) {
+				selected = id;
+				break;
+			}
 		}
 	}
 	if (selected && ensure_valid) {
@@ -2465,3 +2486,4 @@ void TextureCache::ProcessDownloadImages() {
 }
 
 } // namespace Libs::Graphics
+

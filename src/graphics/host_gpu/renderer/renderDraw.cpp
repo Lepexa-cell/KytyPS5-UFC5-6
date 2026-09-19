@@ -79,6 +79,43 @@ void TrackDrawTarget(uint64_t address, ImageId image_id, uint32_t frame_num) {
 	                                                           image_id.generation, frame_num});
 }
 
+// UFC 5 composites its interface into one layer and reuses that surface every frame. Colour
+// attachments in Kyty always load (only a DCC fast clear materializes a clear), so the previous
+// frame stays underneath the newly drawn elements and the interface doubles, overlaps and
+// drifts. Clear that layer once per frame, immediately before the first draw that writes it,
+// to transparent black - the identity value of the premultiplied-alpha blend the UI uses - so
+// elements drawn this frame still composite normally and nothing else shows through.
+//
+// The address is the UI scanout layer that swapchain.cpp names kUfcHudAddress. Kill switch:
+// KYTY_UFC_UI_CLEAR=0 for an A/B against the un-cleared behaviour.
+constexpr uint64_t kUfcUiTargetAddress = 0x0000001114000000ull;
+
+bool ShouldForceUiTargetClear() {
+	static const bool enabled = [] {
+		const char* env = std::getenv("KYTY_UFC_UI_CLEAR");
+		return env == nullptr || env[0] != '0';
+	}();
+	return enabled;
+}
+
+std::mutex g_ui_target_clear_lock;
+uint32_t   g_ui_target_cleared_frame = UINT32_MAX;
+
+// True exactly once per frame, and only for the first draw that binds the UI target. The
+// decision has to be per frame, not per draw: clearing on every draw would erase the elements
+// the same frame already composited.
+bool ConsumeUiTargetForceClear(uint64_t address, uint32_t frame_num) {
+	if (!ShouldForceUiTargetClear() || address != kUfcUiTargetAddress) {
+		return false;
+	}
+	std::scoped_lock guard {g_ui_target_clear_lock};
+	if (g_ui_target_cleared_frame == frame_num) {
+		return false;
+	}
+	g_ui_target_cleared_frame = frame_num;
+	return true;
+}
+
 } // namespace
 
 bool GetTrackedDrawTarget(uint64_t address, uint32_t& image_index, uint32_t& image_generation,
@@ -664,6 +701,22 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		auto& attachment        = state.color_attachments[i];
 		attachment.image_view   = image_view;
 		attachment.image_layout = layout;
+		const auto frame_num =
+		    static_cast<uint32_t>(buffer.GetContext().GetGpu().GetFrameNum());
+		if (ConsumeUiTargetForceClear(target.desc.info.data.address, frame_num)) {
+			// First draw into the UI layer this frame: start from an empty surface instead of
+			// compositing over the previous frame. Transparent black is the identity value of
+			// the premultiplied-alpha blend this layer uses, so real elements are unaffected.
+			attachment.is_clear    = true;
+			attachment.clear_value = {0, 0, 0, 0};
+			static std::atomic<uint32_t> ui_clear_logs {0};
+			if (ui_clear_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF("UI target force clear: addr=0x%016" PRIx64
+				     " image=%u frame=%u extent=%ux%u slot=%u\n",
+				     target.desc.info.data.address, target.image_id.index, frame_num,
+				     extent.width, extent.height, target.target_slot);
+			}
+		}
 	}
 	if (depth.image_id) {
 		const auto owner = cache.m_slot_images.try_get(depth.image_id);
@@ -849,12 +902,20 @@ struct PreparedVertexBuffers {
 	std::array<vk::Buffer, MaxBuffers>     buffers {};
 	std::array<vk::DeviceSize, MaxBuffers> offsets {};
 	uint32_t                               count = 0;
+	// False when the guest ranges behind the bindings could not be validated or acquired.
+	// The draw must then be dropped: the guest descriptors point at memory the host cannot
+	// fetch from, and submitting it is a device loss rather than a skipped quad.
+	bool valid = true;
 };
 
 static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               buffer,
                                                   const ShaderVertexInputInfo& vs_input_info) {
 	EXIT_IF(vs_input_info.buffers_num < 0 ||
 	        vs_input_info.buffers_num > ShaderVertexInputInfo::RES_MAX);
+
+	PreparedVertexBuffers prepared;
+	prepared.count         = static_cast<uint32_t>(vs_input_info.buffers_num);
+	vk::Buffer null_buffer = nullptr;
 
 	// Collect the non-empty guest vertex ranges.
 	std::array<VertexBufferRange, ShaderVertexInputInfo::RES_MAX> ranges {};
@@ -866,8 +927,10 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 			continue;
 		}
 		if (vertex.addr == 0 || size > UINT64_MAX - vertex.addr) {
-			EXIT("invalid vertex buffer range: addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
-			     vertex.addr, size);
+			// A null or wrapping guest range is a descriptor the guest never validated. Drop the
+			// draw; aborting here would take the whole frame down for one bad quad.
+			prepared.valid = false;
+			return prepared;
 		}
 		ranges[range_count++] = {vertex.addr, vertex.addr + size};
 	}
@@ -891,29 +954,47 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 		merged_ranges[merged_count++] = {range.base_address, range.requested_end};
 	}
 
-	auto& cache = buffer.GetContext().GetBufferCache();
+	// Acquire one host buffer per merged guest range and offset each slot into it.
+	auto&       cache         = buffer.GetContext().GetBufferCache();
+	auto&       gpu_resources = buffer.GetContext().GetGpuResources();
 	for (uint32_t i = 0; i < merged_count; i++) {
 		auto& range = merged_ranges[i];
+		// Validate the mapping before acquiring: a range whose first byte is no longer mapped
+		// cannot be fetched at all - the guest has freed it, or a compute pass that produced it
+		// never made it visible. Skipping the draw keeps the rest of the pass alive. The probe
+		// costs one shared lock per range, next to the ClampRangeSize call already made here.
+		if (!gpu_resources.IsMapped(range.base_address, 1)) {
+			prepared.valid = false;
+			return prepared;
+		}
 		// PPSA20298
 		const auto size =
 		    Libs::LibKernel::Memory::ClampRangeSize(range.base_address, range.RequestedSize());
+		if (size == 0) {
+			prepared.valid = false;
+			return prepared;
+		}
 		range.acquired_end = range.base_address + size;
 		range.binding      = cache.ObtainBuffer(range.base_address, size, false);
+		if (range.binding.first == nullptr) {
+			prepared.valid = false;
+			return prepared;
+		}
 		SetVulkanObjectNameF(
 		    buffer.GetContext().GetGraphics().device, range.binding.first->Handle(),
 		    "Kyty.VertexBufferRange[guest=0x{:016x} size=0x{:x}]", range.base_address, size);
 	}
 
-	// Rebuild slot bindings, offsetting non-empty slots into their acquired merged range.
-	PreparedVertexBuffers prepared;
-	prepared.count         = static_cast<uint32_t>(vs_input_info.buffers_num);
-	vk::Buffer null_buffer = nullptr;
 	for (int i = 0; i < vs_input_info.buffers_num; i++) {
 		const auto& vertex = vs_input_info.buffers[i];
 		const auto  size   = VertexBufferDescriptorSize(vertex, vs_input_info);
 		if (size == 0) {
 			if (null_buffer == nullptr) {
 				null_buffer = cache.GetBuffer(NULL_BUFFER_ID).Handle();
+			}
+			if (null_buffer == nullptr) {
+				prepared.valid = false;
+				return prepared;
 			}
 			prepared.buffers[i] = null_buffer;
 			prepared.offsets[i] = 0;
@@ -926,8 +1007,10 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 			                                       vertex.addr < value.acquired_end;
 		                                });
 		if (range == merged_ranges.begin() + merged_count) {
-			EXIT("vertex buffer address is outside the acquired range: addr=0x%016" PRIx64 "\n",
-			     vertex.addr);
+			// The guest programmed a fetch outside every range its own descriptors declared.
+			// Dropping the draw is safe; binding it would fetch past the acquired buffer.
+			prepared.valid = false;
+			return prepared;
 		}
 
 		prepared.buffers[i] = range->binding.first->Handle();
@@ -939,6 +1022,41 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 	}
 
 	return prepared;
+}
+
+// Verification hook for the skinned-mesh path. UFC 5 deforms the fighter in a compute pass and
+// the vertex shader fetches the result, so when a mesh goes missing the question is whether the
+// fetch sees that data. Kyty has no bounding-box culling anywhere in this path - the only way a
+// mesh is dropped here is the guards above - so this logs the resolved slot bindings (guest
+// address, host handle, offset, stride, record count) to make the question answerable from a run.
+// Off by default: KYTY_VS_BUFFER_LOG=1. Capped, because it fires per draw.
+static void TraceVertexBindings(const ShaderVertexInputInfo& vs_input_info,
+                                const PreparedVertexBuffers& prepared) {
+	static const bool enabled = [] {
+		const char* env = std::getenv("KYTY_VS_BUFFER_LOG");
+		return env != nullptr && env[0] != '\0' && env[0] != '0';
+	}();
+	if (!enabled) {
+		return;
+	}
+	static std::atomic<uint32_t> trace_logs {0};
+	if (trace_logs.fetch_add(1, std::memory_order_relaxed) >= 32) {
+		return;
+	}
+	// Same handle-to-integer conversion SetVulkanObjectNameF uses; vk::Buffer is a wrapper class
+	// and cannot be reinterpret_cast directly.
+	const auto handle_value = [](vk::Buffer handle) {
+		return static_cast<uint64_t>(
+		    reinterpret_cast<uintptr_t>(static_cast<vk::Buffer::CType>(handle)));
+	};
+	for (int i = 0; i < vs_input_info.buffers_num; i++) {
+		const auto& vertex = vs_input_info.buffers[i];
+		LOGF("VsVertexBuffer[%d]: guest=0x%016" PRIx64 " buffer=0x%016" PRIx64
+		     " offset=%" PRIu64 " stride=%u records=%u attrs=%d valid=%d\n",
+		     i, vertex.addr, handle_value(prepared.buffers[i]),
+		     static_cast<uint64_t>(prepared.offsets[i]), vertex.stride, vertex.num_records,
+		     vertex.attr_num, prepared.valid ? 1 : 0);
+	}
 }
 
 static void SetDrawDebugPhase(CommandBuffer& buffer, uint64_t submit_id, const DrawCallInfo& draw,
@@ -1108,8 +1226,17 @@ static PreparedIndexBuffer PrepareIndexBuffer(CommandBuffer&               buffe
 		prepared.offset = stream.Copy(source.host_data, source.size, 16);
 		prepared.buffer = stream.Handle();
 	} else {
+		// The whole range the indexed draw will fetch has to be mapped; a partially mapped index
+		// range is the same device loss as an unmapped vertex buffer. Return an unusable binding
+		// so the caller drops the draw.
+		if (!buffer.GetContext().GetGpuResources().IsMapped(source.address, source.size)) {
+			return {};
+		}
 		auto [buffer_ptr, offset] =
 		    buffer.GetContext().GetBufferCache().ObtainBuffer(source.address, source.size, false);
+		if (buffer_ptr == nullptr) {
+			return {};
+		}
 		prepared.buffer = buffer_ptr->Handle();
 		prepared.offset = offset;
 	}
@@ -1127,13 +1254,13 @@ static PreparedIndexBuffer PrepareIndexBuffer(CommandBuffer&               buffe
 
 static void CommitVertexBuffers(vk::CommandBuffer            vk_buffer,
                                 const PreparedVertexBuffers& prepared) {
-	for (uint32_t i = 0; i < prepared.count; i++) {
-		EXIT_IF(prepared.buffers[i] == nullptr);
+	if (prepared.count == 0) {
+		return;
 	}
-	if (prepared.count != 0) {
-		vk_buffer.bindVertexBuffers(0, prepared.count, prepared.buffers.data(),
-		                            prepared.offsets.data());
-	}
+	// Null handles are filtered by IsDrawBindingUsable before this point: binding one succeeds,
+	// but the draw that follows it faults the device instead of being skipped.
+	vk_buffer.bindVertexBuffers(0, prepared.count, prepared.buffers.data(),
+	                            prepared.offsets.data());
 }
 
 static void CommitIndexBuffer(vk::CommandBuffer vk_buffer, const PreparedIndexBuffer& prepared) {
@@ -1141,6 +1268,23 @@ static void CommitIndexBuffer(vk::CommandBuffer vk_buffer, const PreparedIndexBu
 		return;
 	}
 	vk_buffer.bindIndexBuffer(prepared.buffer, prepared.offset, prepared.type);
+}
+
+// Gate every draw/drawIndexed emission on the buffers it needs actually existing. A null vertex
+// or index handle, or a descriptor whose guest range could not be mapped, must drop the draw:
+// vkQueueSubmit answers it with ErrorDeviceLost, which then surfaces as an unrelated-looking
+// host fault while the guest reacts to the lost device.
+static bool IsDrawBindingUsable(const PreparedVertexBuffers& vertex,
+                                const PreparedIndexBuffer& index, bool indexed) {
+	if (!vertex.valid) {
+		return false;
+	}
+	for (uint32_t i = 0; i < vertex.count; i++) {
+		if (vertex.buffers[i] == nullptr) {
+			return false;
+		}
+	}
+	return !indexed || index.buffer != nullptr;
 }
 
 static void LogDrawStateIfNeeded(const CommandBuffer& buffer, const DrawCallInfo& draw,
@@ -1258,6 +1402,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		LogDrawPhase(draw.name, "PrepareVertexBuffers");
 		vertex_bindings = AcquireVertexBuffers(buffer, state.vs_input_info);
 		index_binding   = PrepareIndexBuffer(buffer, index_source);
+		TraceVertexBindings(state.vs_input_info, vertex_bindings);
 	}
 	const auto dp_t2 = Common::Timer::QueryPerformanceCounter();
 	const auto rendering =
@@ -1296,6 +1441,25 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// point onward, every operation targets the current command buffer and cannot touch guest
 	// memory.
 	auto vk_buffer = buffer.Handle();
+	if (!mesh_active && !IsDrawBindingUsable(vertex_bindings, index_binding, emit.indexed)) {
+		// Nothing usable is bound for this quad. The draw is not submitted at all: an empty or
+		// unmapped binding reaches the GPU as a lost device, which is exactly the failure this
+		// guard exists to avoid. Everything else in the pass still runs.
+		static std::atomic<uint32_t> unusable_binding_logs {0};
+		if (unusable_binding_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("Draw skipped, buffer binding unusable: %s indexed=%d vertex_buffers=%u "
+			     "vertex_valid=%d index_buffer_present=%d"
+			     " index_count=%u instances=%u\n",
+			     draw.name, emit.indexed ? 1 : 0, vertex_bindings.count,
+			     vertex_bindings.valid ? 1 : 0,
+			     index_binding.buffer != nullptr ? 1 : 0,
+			     draw.index_count, draw.instance_count);
+		}
+		if (set_auto_debug) {
+			SetDrawDebugPhase(buffer, submit_id, draw, 0x800u);
+		}
+		return;
+	}
 	if (set_bind_debug) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x100u);
 	}

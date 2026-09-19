@@ -808,7 +808,17 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exception_info) {
 	const auto* info = &exception_info;
 
+	// This handler runs on the faulting thread, on the fault path, with the guest and the host
+	// equally suspect, so nothing here may dereference a pointer it has not validated. A second
+	// fault inside the handler escapes the vectored handler and kills the process with the
+	// reporter as the apparent fault site, and the report line is then the only address in the
+	// log - which is exactly how a fault inside a handler masks its own cause.
+	if (info == nullptr) {
+		return false;
+	}
+
 	if (info->type == Common::HostException::ExceptionType::IllegalInstruction &&
+	    info->native_context != nullptr &&
 	    Loader::X64InstructionEmulator::TryEmulate(info->native_context)) {
 		return true;
 	}
@@ -823,7 +833,25 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			case CoreAccess::Execute: access = GpuAccess::Execute; break;
 			case CoreAccess::Unknown: return false;
 		}
-		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
+		// "address=0x0000000000000130" is a null-base access - offset 0x130 is small enough that
+		// the base pointer must be null (a guest object field, e.g. [rax+0x130] with rax==0), and
+		// it can never name a mapped GPU surface. Trying to resolve it through the GPU fault
+		// path only hides the real report, so keep it out of that route and print the faulting PC
+		// and registers instead, which is what localizes the missing null check.
+		if (info->access_violation_vaddr == 0 ||
+		    info->access_violation_vaddr < 0x1000ull) {
+			static std::atomic<uint32_t> null_base_logs {0};
+			if (null_base_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF("Null-base host access: address=0x%016" PRIx64 " pc=0x%016" PRIx64
+				     " access=%u rax=0x%016" PRIx64 " rbx=0x%016" PRIx64
+				     " rcx=0x%016" PRIx64 " rdx=0x%016" PRIx64 " rsi=0x%016" PRIx64
+				     " rdi=0x%016" PRIx64 " rsp=0x%016" PRIx64 "\n",
+				     info->access_violation_vaddr, info->exception_address,
+				     static_cast<unsigned>(info->access_violation_type), info->rax, info->rbx,
+				     info->rcx, info->rdx, info->rsi, info->rdi, info->rsp);
+			}
+		} else if (Libs::LibKernel::Memory::HandleGpuFault(access,
+		                                                  info->access_violation_vaddr)) {
 			return true;
 		}
 	}

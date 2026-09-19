@@ -125,6 +125,18 @@ bool ShouldSkipComputeHash(uint64_t hash) {
 	return EnvListContainsHash("KYTY_SKIP_CS_HASH", hash);
 }
 
+// Guest surfaces the occlusion-CS stub must leave alone. The stub replaces the skipped Frostbite
+// occlusion/Hi-Z compute shader by clearing the images it declares as written (see the `skip_cs`
+// block below), which is what makes the intro and corner scenes render. In the fight round the
+// same stub can wipe a surface the scene still consumes, and the frame then presents black behind
+// an intact HUD. This lets a suspect surface be excluded in-game, without a rebuild, to A/B
+// whether the stub's clear is what blanks the scene at close range:
+//   KYTY_STUB_SKIP_CLEAR_ADDR=0x1163770000[,0x...]
+// Diagnostic only - unset means the stub behaves exactly as before.
+static bool ShouldSkipStubClearAddress(uint64_t address) {
+	return EnvListContainsHash("KYTY_STUB_SKIP_CLEAR_ADDR", address);
+}
+
 static bool TryParseEnvU32(const char* name, uint32_t& out) {
 	const char* env = std::getenv(name);
 	if (env == nullptr || env[0] == '\0') {
@@ -754,6 +766,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 		auto&    cache        = buffer.GetContext().GetTextureCache();
 		uint32_t cleared      = 0;
+		uint32_t skipped_by_addr = 0;
+		// Attribution: the log must name the surfaces this stub clears, otherwise a frame that
+		// goes black while it fires cannot be traced to the stub at all.
+		std::vector<std::string> cleared_details;
 		for (uint32_t i = 0; i < program.info.images.size() && i < resources.images.size(); i++) {
 			const auto& resource = program.info.images[i];
 			if (!resource.written) {
@@ -769,6 +785,11 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			    image.info.resources.levels == 0) {
 				continue;
 			}
+			const uint64_t image_address = image.info.data.address;
+			if (ShouldSkipStubClearAddress(image_address)) {
+				skipped_by_addr++;
+				continue;
+			}
 			const bool is_depth = image.info.IsDepth();
 			const vk::ImageSubresourceRange range {
 			    is_depth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor, 0,
@@ -780,14 +801,41 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 				clear.color = vk::ClearColorValue {std::array<float, 4> {0.0f, 0.0f, 0.0f, 0.0f}};
 			}
 			cache.ClearImage(buffer, binding.image_id, range, clear);
+			if (cleared_details.size() < 8) {
+				cleared_details.push_back(
+				    fmt::format("img={}:{} addr=0x{:016x} extent={}x{} fmt={} depth={}",
+				                binding.image_id.index, binding.image_id.generation, image_address,
+				                image.info.extent.width, image.info.extent.height,
+				                static_cast<int>(image.backing.format), is_depth ? 1 : 0));
+			}
 			cleared++;
+		}
+		{
+			// Each distinct set of cleared surfaces is printed once, not just the first firings:
+			// the walkout and the fight round clear different surfaces, and those addresses are
+			// the whole point of the line. Capped so a pathological scene cannot flood the log.
+			static std::mutex                      detail_log_mutex;
+			static std::unordered_set<std::string> detail_log_seen;
+			if (!cleared_details.empty()) {
+				std::string signature;
+				for (const auto& detail: cleared_details) {
+					signature += detail;
+					signature += ';';
+				}
+				std::scoped_lock lock {detail_log_mutex};
+				if (detail_log_seen.size() < 16 && detail_log_seen.insert(signature).second) {
+					for (const auto& detail: cleared_details) {
+						LOGF("GraphicsRenderDispatchDirect: stub clear %s\n", detail.c_str());
+					}
+				}
+			}
 		}
 		LOGF("GraphicsRenderDispatchDirect: stubbing watched compute shader hash=0x%016" PRIx64
 		     " addr=0x%016" PRIx64 " groups=%ux%ux%u local=%ux%ux%u cleared_images=%u "
-		     "cleared_buffers=%u\n",
+		     "cleared_buffers=%u skipped_by_addr=%u\n",
 		     shader_hash, sh_ctx.GetCs().cs_regs.data_addr, thread_group_x, thread_group_y,
 		     thread_group_z, input_info.threads_num[0], input_info.threads_num[1],
-		     input_info.threads_num[2], cleared, cleared_buffers);
+		     input_info.threads_num[2], cleared, cleared_buffers, skipped_by_addr);
 		ResetBindings();
 		return;
 	}

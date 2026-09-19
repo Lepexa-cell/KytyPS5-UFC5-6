@@ -1,6 +1,10 @@
 # UFC 5 / KytyPS5 ledger
 
-Last updated: 2026-09-11 session 5 — **THE BLACK ROUND DIRECTLY CONSUMES OUTPUT FROM THE SKIPPED WAVE64 CS.**
+Last updated: 2026-09-19 — new section below: a **depth-bounds safe fallback** (a degenerate
+`DB_DEPTH_BOUNDS_MIN/MAX` pair culls a whole pass, which is a black scene behind an intact HUD) plus
+attribution for the occlusion-CS stub's clears. The report's close-range blackout is **not attributed
+yet**; three candidate mechanisms and the exact next measurement are listed there.
+Previously: 2026-09-11 session 5 — **THE BLACK ROUND DIRECTLY CONSUMES OUTPUT FROM THE SKIPPED WAVE64 CS.**
 In actual-round frame 1073, CS `0xea0aceac518ec52d` declares `0x1163770000` as read-write buffer 9;
 immediately afterward PS `0x654607b31fe5f6d6` samples that same address as a 1600x900 HDR image. The
 captured input and its downstream output are the same nearly-solid-white image with identical SHA256.
@@ -39,6 +43,93 @@ See "2026-09-11 (session 3)".
 Previously: 2026-09-11 session 2 — **in-fight wall identified: `IT_DISPATCH_INDIRECT` host arg read, ~45-50% of the frame**; CPU/GPU measured ~50/50 and serialised (per-draw track floors at ~2.1 fps); `vkCmdDispatchIndirect` implemented behind `KYTY_INDIRECT_DISPATCH`, default off, blocked on a depth-alias-sampling bug. See "2026-09-11 (session 2)".
 
 Previously: 2026-09-10 (FPS work: intra-command-buffer EOP-wait skip — menu ~24→~33 fps, in-match cp_rest/finish collapsed but drawprep_ms now the wall; frame instrumentation added; commits 745d4d8 / 8ee5cc8 / aa794cd on fork)
+
+### 2026-09-19 — depth-bounds safe fallback, and the first attributed black-frame path
+
+**The report.** Testers on NVIDIA: the fighters and the octagon render while the fighters are apart;
+**the moment they close to strike range the scene goes black and only the HUD survives.** The report
+attributes it to Frostbite "contact shadow / screen-space occlusion" or depth-bounds / occlusion
+culling between overlapping meshes. That attribution is **not established by anything in this repo**
+and should not be repeated as fact — see "What was actually verified" below.
+
+**What the repo already says about a black scene.** Two independent mechanisms are on record, and
+neither is "contact shadows":
+1. **The skipped occlusion CS** (`0xea0aceac518ec52d`, `KYTY_SKIP_CS_HASH`). Session 5 proved the
+   round samples its written buffer 9 as the HDR scene source, so the round is black *for the whole
+   fight*, not only at close range. The stub that replaces it clears the images the CS declares as
+   written (`cleared_images=2`), and `KYTY_STUB_CLEAR_BUFFERS=1` was **refuted** (round stayed black
+   *and* the HUD corrupted).
+2. **Invalid structured control flow** in the three pixel übershaders → NVIDIA miscompiled it into a
+   GPU hang (`ErrorDeviceLost`), fixed by `ValidateStructuredExits()` + the DispatcherFull fallback.
+
+**A third mechanism is now guarded, and it is a real "scene vanishes, HUD stays" shape.** Depth
+bounds are **static pipeline state**: `depthRenderTarget.cpp` copies `dc.depth_bounds_enable` and the
+`DB_DEPTH_BOUNDS_MIN/MAX` registers into `RenderDepthInfo`, `pipelineCache.cpp` bakes them into
+`PipelineStaticParameters`, and `shaders.cpp` feeds them to the static
+`VkPipelineDepthStencilStateCreateInfo`. So an out-of-interval range applies to **every draw that
+reuses that pipeline**:
+- `min == max` culls **every** fragment of the pass — not an error, not a validation message, just a
+  pass that renders nothing;
+- `min > max` is **undefined behaviour in Vulkan** (AMD hardware always receives `min < max`);
+- the guest defaults are `min=0.0, max=1.0` (`hardwareContext.h`), i.e. a proper interval, which is
+  why this only bites on the passes that program the pair for themselves.
+
+A pass that renders nothing is exactly a black scene behind an intact HUD, which is the shape of the
+report — but **only for that pass**. Whether UFC 5 has such a pass, and whether it is entered at
+strike range, is a measurement this session could not take (no GPU in this workspace).
+
+**CHANGE 1 — `depthRenderTarget.cpp`, `ResolveRenderDepthTarget` (uncommitted).** When
+`depth_bounds_test_enable` is set and `!(min < max)` (the predicate is written that way so NaN is
+caught too), the pass **degrades to "no bounds test"** instead of vanishing, and the event is logged
+once per degenerate pipeline build into the normal log:
+```
+DepthBounds: degenerate range submit=<id> min=%g max=%g -> depth-bounds test disabled for this pass (safe fallback)
+```
+- `KYTY_DEPTH_BOUNDS_FALLBACK=0` restores the old strict passthrough for an A/B.
+- `KYTY_DEPTH_BOUNDS_LOG=0` silences the line.
+- Both are added to `run_ufc5.ps1`'s clear-list so a leftover shell value cannot silently change a run.
+- **Deliberately a fallback, not a passthrough change:** a proper range is untouched, and a degenerate
+  one can never have meant "cull everything", so "draw it" is strictly closer to the guest's intent
+  than "render nothing". If the line never fires during a close-range blackout, this guard is not the
+  cause and the search moves on with evidence.
+
+**CHANGE 2 — `renderCompute.cpp`, occlusion-CS stub (uncommitted, diagnostic only).** The stub that
+replaces the skipped CS now **names every surface it clears** — once per distinct surface set, capped
+at 16 sets, so the walkout's surfaces and the fight round's surfaces both appear — because a frame
+that goes black while the stub fires cannot otherwise be traced to it:
+```
+GraphicsRenderDispatchDirect: stub clear img=<i>:<gen> addr=0x… extent=<w>x<h> fmt=<vk> depth=<0|1>
+GraphicsRenderDispatchDirect: stubbing watched compute shader hash=… cleared_images=N cleared_buffers=N skipped_by_addr=N
+```
+`KYTY_STUB_SKIP_CLEAR_ADDR=0x1163770000[,0x…]` excludes named addresses from the clear, in-game,
+without a rebuild — the A/B for "is the stub's clear what blanks the scene here?". Unset means the
+stub behaves exactly as it did before. The earlier refutation of `KYTY_STUB_CLEAR_BUFFERS=1` applies
+to clearing **buffers**, and the new switch is not a re-run of it.
+
+**What was actually verified (and what was not).** No GPU, no game dump, and **no checked-out 3rdparty
+submodules** in this workspace, so the emulator cannot be built here at all; nothing below claims a
+rendered frame:
+- `ufc5/tools/depth_bounds_check.cpp` + `.bat`: a host-side harness (clang-cl 22.1.3, `/W4 /WX`) that
+  carries **verbatim copies** of the new helpers and a re-implementation of the call site. **17/17
+  checks pass:** proper ranges (`0→1`, `0.5→0.75`, `1→1.1`, `-1→2`) keep the bounds test enabled and
+  untouched; `1→0`, `0→0`, `1→1` and the NaN cases are detected and no longer cull the pass; a
+  bounds-disabled state is not consulted at all. Run: `ufc5\tools\depth_bounds_check.bat`.
+- Every identifier the edits use was checked against the real declarations (`image.info.extent`,
+  `image.info.data.address`, `image.info.resources.levels`, `image.backing.format`, `ImageId::index`
+  / `generation`, `EnvListContainsHash`, `fmt::format`), and the depth-bounds producer has exactly one
+  call site, so the guard cannot be bypassed.
+- **NOT verified:** that UFC 5 ever programs a degenerate range, that the close-range blackout is this
+  rather than the skipped CS or the occlusion stub, and that the in-tree build compiles.
+
+**Next measurement, in order (needs a GPU + the game):**
+1. `run_ufc5.ps1` normally, walk into a fight, close to strike range, then
+   `Select-String -Path <log> -Pattern 'DepthBounds: degenerate'`. A hit names the pass and the range;
+   no hit removes mechanism 3 from the candidate list.
+2. `KYTY_STUB_SKIP_CLEAR_ADDR=0x1163770000` (and/or whatever the new `stub clear` line names) against
+   the same scene: if the scene returns, the stub's clear is what blanks it and the fix belongs in the
+   CS replacement, not in depth handling.
+3. Only if both are flat: `-Validate` plus a capture, to distinguish "draws issued but culled" from
+   "draws never issued" — the same fork session 4 left open for the frozen HDR target.
 
 ### 2026-09-11 (session 3) — the übershaders structurize; the cause was a SHARED RETURN BLOCK
 

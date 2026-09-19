@@ -19,9 +19,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cinttypes>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 
 namespace Libs::Graphics {
@@ -68,6 +70,54 @@ static vk::StencilOp ConvertStencilOp(uint8_t value, uint8_t write_mask, uint8_t
 static bool UsesStencilOpValue(uint8_t fail, uint8_t pass, uint8_t depth_fail) {
 	constexpr auto replace_op = static_cast<uint8_t>(Prospero::StencilOp::kReplaceOp);
 	return fail == replace_op || pass == replace_op || depth_fail == replace_op;
+}
+
+// Depth bounds are STATIC pipeline state: the range is baked into PipelineStaticParameters and
+// therefore into the pipeline key (pipelineCache.cpp), so whatever the guest had programmed when
+// the pipeline was created applies to every draw that reuses it. A range that is not a proper
+// interval is never a legitimate "cull less" request: the AMD hardware always gets min < max, in
+// Vulkan min > max is undefined behaviour, and min == max culls every fragment of the pass.
+//
+// The consequence of the degenerate case is exactly the UFC 5 (PPSA03541) report this guards
+// against: when the fighters close to strike range the game switches to a pass whose depth-bounds
+// state is degenerate, the pass renders nothing, and the frame is a black scene with the HUD still
+// composited. It is not a crash and it writes no error, so nothing points at this state in the log.
+// Falling back to "no bounds test" keeps the pass drawing, which is strictly closer to the guest's
+// intent than rendering nothing.
+//
+// KYTY_DEPTH_BOUNDS_FALLBACK=0 restores strict passthrough (old behaviour) for an A/B.
+// KYTY_DEPTH_BOUNDS_LOG=0 silences the attribution line.
+[[nodiscard]] static bool DepthBoundsRangeIsDegenerate(float min_bounds, float max_bounds) {
+	// Written as !(...) rather than (>=) so a NaN operand is caught as well.
+	return !(min_bounds < max_bounds);
+}
+
+[[nodiscard]] static bool DepthBoundsFallbackEnabled() {
+	static const bool enabled = [] {
+		const char* env = std::getenv("KYTY_DEPTH_BOUNDS_FALLBACK");
+		return env == nullptr || env[0] != '0';
+	}();
+	return enabled;
+}
+
+[[nodiscard]] static bool DepthBoundsLogEnabled() {
+	static const bool enabled = [] {
+		const char* env = std::getenv("KYTY_DEPTH_BOUNDS_LOG");
+		return env == nullptr || env[0] != '0';
+	}();
+	return enabled;
+}
+
+static void LogDegenerateDepthBounds(uint64_t submit_id, float min_bounds, float max_bounds,
+                                     bool disabled) {
+	static std::atomic<uint32_t> log_count {0};
+	if (log_count.fetch_add(1, std::memory_order_relaxed) >= 8) {
+		return;
+	}
+	LOGF("DepthBounds: degenerate range submit=%" PRIu64 " min=%g max=%g -> %s\n", submit_id,
+	     static_cast<double>(min_bounds), static_cast<double>(max_bounds),
+	     disabled ? "depth-bounds test disabled for this pass (safe fallback)"
+	              : "passed through to Vulkan; this pass may be fully culled");
 }
 
 [[nodiscard]] static vk::Format ResolveHostDepthAttachmentFormat(const CommandBuffer&     buffer,
@@ -246,6 +296,19 @@ void RenderExecutor::ResolveRenderDepthTarget(uint64_t submit_id, CommandBuffer&
 	r.depth_bounds_test_enable = dc.depth_bounds_enable;
 	r.depth_min_bounds         = hw.GetDepthBoundsMin();
 	r.depth_max_bounds         = hw.GetDepthBoundsMax();
+	// See DepthBoundsRangeIsDegenerate: a range that is not a proper interval culls the whole
+	// pass, which is a black scene behind an intact HUD rather than an error. Degrade to "no
+	// bounds test" instead of letting the pass vanish, and always say so in the log.
+	if (r.depth_bounds_test_enable &&
+	    DepthBoundsRangeIsDegenerate(r.depth_min_bounds, r.depth_max_bounds)) {
+		const bool fallback = DepthBoundsFallbackEnabled();
+		if (DepthBoundsLogEnabled()) {
+			LogDegenerateDepthBounds(submit_id, r.depth_min_bounds, r.depth_max_bounds, fallback);
+		}
+		if (fallback) {
+			r.depth_bounds_test_enable = false;
+		}
+	}
 
 	r.stencil_clear_enable =
 	    has_stencil && rc.stencil_clear_enable && !z.depth_view.stencil_write_disable;

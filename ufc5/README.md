@@ -24,6 +24,7 @@ that is the skipped occlusion compute shader, a known and separate problem.
 | `tools/devenv.ps1` | MSVC/clang-cl build environment. |
 | `tools/drive_ufc.py`, `ufc5_pad.py`, `ufc5_keys.py`, `*.route` | Virtual pad menu navigation (vgamepad + ViGEmBus). |
 | `tools/capture-kyty.ps1` | Log capture helper. |
+| `tools/depth_bounds_check.bat` | Host-side check for the degenerate depth-bounds fallback in `depthRenderTarget.cpp`. No GPU, game dump or 3rdparty submodules needed; prints 17 checks. |
 
 ```
 ufc5\tools\run_ufc5.bat

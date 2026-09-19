@@ -67,11 +67,18 @@ $env:KYTY_SRT_LINEAR     = '1'
 #   KYTY_TEXGC_BUDGET_FIX texgc 3ms -> 71ms; the GC runs ~175x per frame
 #   KYTY_BUFGC_OWN_SHARE  0 restores the pre-fix BufferCache behaviour
 #   KYTY_SKIP_PS_HASH     diagnostic; drops draws, so the frame is incomplete
+#   KYTY_DEPTH_BOUNDS_FALLBACK  code default is ON (a degenerate depth-bounds range culls the
+#                        whole pass -> black scene + HUD).  Cleared so an env override from
+#                        another session cannot silently A/B us back onto the culled path.
+#   KYTY_DEPTH_BOUNDS_LOG  default ON; only silences the attribution line.
+#   KYTY_STUB_SKIP_CLEAR_ADDR   diagnostic for the occlusion-CS stub; keeps named surfaces from
+#                        being cleared. Unset = stub behaves as before.
 foreach ($name in @('KYTY_XFER_QUEUE','KYTY_GC_CRITICAL_MB','KYTY_GC_TRIGGER_MB',
                     'KYTY_TEXGC_AGE_FIX','KYTY_TEXGC_BUDGET_FIX',
                     'KYTY_BUFGC_OWN_SHARE','KYTY_SKIP_CS_HASH','KYTY_SKIP_PS_HASH',
                     'KYTY_GPU_TIMESTAMP_PS','KYTY_DEFER_READBACK','KYTY_GPU_TIMESTAMPS',
-                    'KYTY_RUN_HANG_CS')) {
+                    'KYTY_RUN_HANG_CS','KYTY_DEPTH_BOUNDS_FALLBACK','KYTY_DEPTH_BOUNDS_LOG',
+                    'KYTY_STUB_SKIP_CLEAR_ADDR')) {
     Remove-Item "Env:\$name" -ErrorAction SilentlyContinue
 }
 

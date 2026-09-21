@@ -1286,7 +1286,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 			return;
 		}
 		if (!candidate.IsGpuModified() || candidate.backing.image == nullptr ||
-		    candidate.backing.extent.width < 1280u || candidate.backing.extent.height < 720u) {
+		    candidate.backing.extent.width < 512u || candidate.backing.extent.height < 288u) {
 			return;
 		}
 		source = &candidate;

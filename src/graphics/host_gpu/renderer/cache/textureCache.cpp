@@ -973,6 +973,19 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		if (requested.tile_mode != cached.info.tile_mode ||
 		    (requested.resources == cached.info.resources &&
 		     requested.mip_layout != cached.info.mip_layout)) {
+			// UFC 5: the game renders the 3D scene into a 1-mip render target and then
+			// binds the same address as a multi-mip texture for bloom/exposure compute.
+			// If tile modes differ but the cached image holds GPU-written content and the
+			// request adds mip levels, preserve the data via ExpandImage instead of
+			// discarding it — otherwise the compute pass reads a cleared (black) buffer.
+			if (cached.IsGpuModified() && cached.usage.render_target &&
+			    requested.resources.levels > cached.info.resources.levels &&
+			    requested.extent.width == cached.info.extent.width &&
+			    requested.extent.height == cached.info.extent.height &&
+			    ImageViewOps::FormatsCompatible(cached.info.pixel_format,
+			                                    requested.pixel_format)) {
+				return {ExpandImage(requested, cached_id)};
+			}
 			if (safe_to_delete) {
 				FreeImage(cached_id);
 			}
@@ -1632,7 +1645,7 @@ void TextureCache::NotePresentableColor(const Image& image) {
 	if (address == 0x000000111a800000ull || address == 0x000000111b800000ull) {
 		return;
 	}
-	if (image.backing.extent.width < 1280u || image.backing.extent.height < 720u) {
+	if (image.backing.extent.width < 512u || image.backing.extent.height < 288u) {
 		return;
 	}
 	if (!IsPresentableColorFormat(image.backing.format) || address == 0 ||

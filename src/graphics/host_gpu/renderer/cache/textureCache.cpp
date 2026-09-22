@@ -62,6 +62,40 @@ constexpr uint64_t NumFramesBeforeRemoval = 32;
 	}
 }
 
+[[nodiscard]] bool AreColorTileModesCompatible(Prospero::TileMode a,
+                                               Prospero::TileMode b) noexcept {
+	// Both modes resolve to the thin 64KB-page colour block family with the same
+	// mip-tail raster, so the guest byte layout is identical: a surface written
+	// with one mode can be read with the other.
+	const auto is_64kb_color = [](Prospero::TileMode mode) {
+		return mode == Prospero::TileMode::kStandard64KB ||
+		       mode == Prospero::TileMode::kRenderTarget;
+	};
+	return is_64kb_color(a) && is_64kb_color(b);
+}
+
+// SameGuestLayout without the tile-mode equality requirement, for aliases whose
+// tile modes are layout-equivalent (see AreColorTileModesCompatible).
+[[nodiscard]] bool SameGuestLayoutExceptTileMode(const ImageInfo& cached,
+                                                 const ImageInfo& requested) noexcept {
+	return cached.data.address == requested.data.address &&
+	       cached.data.size == requested.data.size && cached.extent == requested.extent &&
+	       cached.samples == requested.samples &&
+	       cached.bytes_per_block == requested.bytes_per_block &&
+	       cached.resources == requested.resources &&
+	       (cached.type == requested.type || requested.extent == vk::Extent3D {1, 1, 1});
+}
+
+// KYTY_NO_RT_COLOR_ALIAS=1 restores the old discard-and-recreate behaviour for the
+// cross-tile-mode colour alias below.
+[[nodiscard]] bool ColorTileAliasReuseEnabled() {
+	static const bool enabled = [] {
+		const char* env = std::getenv("KYTY_NO_RT_COLOR_ALIAS");
+		return env == nullptr || env[0] != '1' || env[1] != '\0';
+	}();
+	return enabled;
+}
+
 [[nodiscard]] bool DecodeDccClear(const TextureCache::ImageDesc& desc, vk::Format format,
                                   uint32_t fill, vk::ClearColorValue& clear) {
 	const auto code = static_cast<uint8_t>(fill);
@@ -985,6 +1019,32 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 			    ImageViewOps::FormatsCompatible(cached.info.pixel_format,
 			                                    requested.pixel_format)) {
 				return {ExpandImage(requested, cached_id)};
+			}
+			// UFC 5: the composite pass samples the HDR scene target it just rendered.
+			// A texture descriptor cannot encode TileMode::kRenderTarget, so the game
+			// binds the same address as kStandard64KB. Both modes share the thin 64KB
+			// colour block layout and the Vulkan backing is eOptimal tiling either way,
+			// so the GPU-written contents are already the correct source: reuse them
+			// instead of discarding the image and letting the composite shader read a
+			// cleared (black) replacement.
+			if (requested.tile_mode != cached.info.tile_mode &&
+			    AreColorTileModesCompatible(requested.tile_mode, cached.info.tile_mode) &&
+			    cached.IsGpuModified() && cached.usage.render_target &&
+			    SameGuestLayoutExceptTileMode(cached.info, requested) &&
+			    ColorTileAliasReuseEnabled() &&
+			    ImageViewOps::FormatsCompatible(cached.info.pixel_format,
+			                                    requested.pixel_format)) {
+				static std::atomic<uint32_t> color_alias_logs = 0;
+				if (color_alias_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF("TextureCache: reusing GPU-written colour target across tile modes "
+					     "%u -> %u addr=0x%016" PRIx64 " extent=%ux%u fmt=%d -> %d\n",
+					     static_cast<uint32_t>(cached.info.tile_mode),
+					     static_cast<uint32_t>(requested.tile_mode), requested.data.address,
+					     requested.extent.width, requested.extent.height,
+					     static_cast<int>(cached.info.pixel_format),
+					     static_cast<int>(requested.pixel_format));
+				}
+				return {cached_id};
 			}
 			if (safe_to_delete) {
 				FreeImage(cached_id);

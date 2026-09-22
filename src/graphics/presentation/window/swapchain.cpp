@@ -1317,6 +1317,12 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		         "flip alias", true);
 		consider(cache.FindLastPresentableColor(), "last color", false);
 		if (!hud_scanout) {
+			// The fight scene is the HDR colour target the composite pass consumes. When the
+			// scanout image carries no current GPU contents (for example because the VideoOut
+			// descriptor's tile mode does not match the one the scene target was rendered
+			// with), the game's own scene target is the most recent complete frame.
+			consider(cache.FindImageFromRange(kUfcFightAddress, 0x0000000002000000ull, false),
+			         "fight scene fallback", false);
 			consider(cache.FindImageFromRange(kUfcSceneAddress, 0x0000000000870000ull, false),
 			         "compositor color", false);
 		}

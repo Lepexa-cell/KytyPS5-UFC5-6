@@ -12,6 +12,8 @@
 #                                  # meaningless because it does the work twice.
 #   .\run_ufc5.ps1 -RunHangCs      # run the real wave64 occlusion CS instead
 #                                  # of skipping it; A/B test only, likely TDRs
+#   .\run_ufc5.ps1 -ForceScene     # test hook: force 3D scene, suppress HUD
+#                                  # (KYTY_UFC_FORCE_SCENE)
 #
 # Reading the result: NEVER quote fps from a single FrameProfile line. Scenes
 # vary 2,400-4,100 draws/frame, so two runs of the "same" fight differ by 70%.
@@ -26,6 +28,7 @@ param(
     [switch] $Verify,
     [switch] $RunHangCs,
     [switch] $Timestamps,
+    [switch] $ForceScene,
     [string] $GameDir   = 'D:\PS5\Games\UFC5',
     [string] $BinDir    = 'D:\PS5\Emulators\KytyPS5-Bin',
     [string] $LogDir    = 'D:\PS5'
@@ -51,6 +54,11 @@ Start-Sleep -Seconds 2
 # KYTY_SRT_LINEAR     Flat SRT evaluator. getprog -31%; does not show
 #                     end-to-end, but it is verified equivalent and free to run.
 $env:KYTY_SRT_LINEAR     = '1'
+# KYTY_UFC_FORCE_SCENE  Test hook: forcefully prohibit the HUD/interface layer
+#                       from being the presentation source. The 3D scene (octagon,
+#                       fighters) is searched unconditionally; if not found the frame
+#                       is cleared to black instead of blitting the HUD-only buffer.
+#                       Enable with -ForceScene. See ledger "native-scanout rework".
 # KYTY_GPU_TIMESTAMPS is NOT on by default. GpuTimestamps::Arm() resets the query pool from the
 # HOST while command buffers from the previous window can still be in flight, so a slot can be
 # written twice with only one intervening reset - Vulkan validation reports
@@ -71,7 +79,7 @@ foreach ($name in @('KYTY_XFER_QUEUE','KYTY_GC_CRITICAL_MB','KYTY_GC_TRIGGER_MB'
                     'KYTY_TEXGC_AGE_FIX','KYTY_TEXGC_BUDGET_FIX',
                     'KYTY_BUFGC_OWN_SHARE','KYTY_SKIP_CS_HASH','KYTY_SKIP_PS_HASH',
                     'KYTY_GPU_TIMESTAMP_PS','KYTY_DEFER_READBACK','KYTY_GPU_TIMESTAMPS',
-                    'KYTY_RUN_HANG_CS')) {
+                     'KYTY_RUN_HANG_CS','KYTY_UFC_FORCE_SCENE')) {
     Remove-Item "Env:\$name" -ErrorAction SilentlyContinue
 }
 
@@ -83,6 +91,8 @@ if ($RunHangCs) {
 }
 
 if ($Timestamps) { $env:KYTY_GPU_TIMESTAMPS = '1' }
+
+if ($ForceScene) { $env:KYTY_UFC_FORCE_SCENE = '1'; $Tag = "$Tag-force-scene" }
 
 if ($Baseline) {
     # A/B control: the emulator as it behaves without this session's opt-ins.
@@ -105,7 +115,7 @@ Write-Host ''
 Write-Host 'KytyPS5 / UFC 5 (PPSA03541)' -ForegroundColor Cyan
 Write-Host "  log      $log"
 foreach ($n in @('KYTY_SKIP_CS_HASH','KYTY_RUN_HANG_CS','KYTY_GPU_TIMESTAMPS',
-                 'KYTY_SRT_LINEAR','KYTY_BUFGC_OWN_SHARE')) {
+                  'KYTY_SRT_LINEAR','KYTY_BUFGC_OWN_SHARE','KYTY_UFC_FORCE_SCENE')) {
     $v = [Environment]::GetEnvironmentVariable($n)
     if ($v) { Write-Host ("  {0,-22} {1}" -f $n, $v) }
 }

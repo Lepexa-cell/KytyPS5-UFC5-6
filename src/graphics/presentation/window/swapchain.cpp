@@ -1305,18 +1305,34 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	// Retain the early-menu fallbacks only when scanout has no current GPU contents.
 	const bool native_scanout = scanout.SafeToDownload() &&
 	    (scanout.usage.storage || scanout.usage.render_target);
-	const bool hud_scanout = scanout.info.data.address == kUfcHudAddress;
+	// A flip buffer at a registered VideoOut address that carries only the HUD
+	// (8.6 % non-zero on black) was observed in-match: scanout.addr = 0x111a800000 /
+	// 0x111b800000, scene at 0x1168360000 is 98.6 % non-zero. The scanout *is* GPU-written
+	// so native_scanout is true and hud_scanout was false — the fight-scene fallback was
+	// never consulted and the HUD-only buffer was blitted to the screen. Extend detection
+	// to the flip-buffer twin addresses so they are recognised as HUD sources.
+	const bool hud_scanout = scanout.info.data.address == kUfcHudAddress ||
+	                         scanout.info.data.address == 0x000000111a800000ull ||
+	                         scanout.info.data.address == 0x000000111b800000ull;
+	// ── Test hook: KYTY_UFC_FORCE_SCENE ─────────────────────────────────────────
+	// When set, forcefully prohibit the HUD / interface layer from being selected
+	// as the presentation source. The 3D scene (octagon, fighters) is searched
+	// unconditionally; if none is found the frame is cleared instead of copying HUD.
+	static const bool force_scene = [] {
+		const char* env = std::getenv("KYTY_UFC_FORCE_SCENE");
+		return env != nullptr && std::strcmp(env, "0") != 0;
+	}();
 	if (hud_scanout) {
 		consider(cache.FindImageFromRange(kUfcFightAddress, 0x0000000002000000ull, false),
 		         "fight scene under HUD", false);
 		consider(cache.FindImageFromRange(kUfcSceneAddress, 0x0000000000870000ull, false),
 		         "scene under HUD", false);
 	}
-	if (!native_scanout || hud_scanout) {
+	if (!native_scanout || hud_scanout || force_scene) {
 		consider(cache.FindImageFromRange(info.data.address, 0x0000000000870000ull, false),
 		         "flip alias", true);
 		consider(cache.FindLastPresentableColor(), "last color", false);
-		if (!hud_scanout) {
+		if (!hud_scanout || force_scene) {
 			// The fight scene is the HDR colour target the composite pass consumes. When the
 			// scanout image carries no current GPU contents (for example because the VideoOut
 			// descriptor's tile mode does not match the one the scene target was rendered
@@ -1325,6 +1341,16 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 			         "fight scene fallback", false);
 			consider(cache.FindImageFromRange(kUfcSceneAddress, 0x0000000000870000ull, false),
 			         "compositor color", false);
+		}
+	}
+	// Test hook: if the HUD was still selected as the source (no 3D scene found),
+	// suppress it — clear to the marker colour instead of blitting the HUD-only
+	// buffer. This verifies the 3D scene can physically appear without the interface.
+	const bool suppress_hud = force_scene && hud_scanout && source == &scanout;
+	if (suppress_hud) {
+		static std::atomic<uint32_t> suppress_logs = 0;
+		if (suppress_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF("UFC 5 TEST: HUD scanout suppressed — no 3D scene found, clearing to marker\n");
 		}
 	}
 	auto& image = *source;
@@ -1365,7 +1391,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 			     image.backing.extent.width, image.backing.extent.height);
 		}
 	}
-	if (!image.IsGpuModified()) {
+	if (suppress_hud || !image.IsGpuModified()) {
 		vk::ClearColorValue marker {};
 		marker.float32[0] = 1.0f;
 		marker.float32[2] = 1.0f;

@@ -1271,6 +1271,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	constexpr uint64_t kUfcHudAddress   = 0x0000001114000000ull;
 	constexpr uint64_t kUfcFightAddress = 0x0000001168360000ull;
 	constexpr uint64_t kUfcSceneAddress = 0x0000001162c00000ull;
+	constexpr uint64_t kUfcRealSceneAddress = 0x000000116d300000ull;
 	static std::atomic<uint32_t> ufc_present_logs = 0;
 	const auto consider = [&](ImageId id, const char* tag, bool allow_scanout_addr) {
 		if (!id || source != &scanout) {
@@ -1325,6 +1326,8 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		return env == nullptr || std::strcmp(env, "0") != 0;
 	}();
 	if (hud_scanout) {
+		consider(cache.FindImageFromRange(kUfcRealSceneAddress, 0x0000000002000000ull, false),
+		         "real fight scene under HUD", false);
 		consider(cache.FindImageFromRange(kUfcFightAddress, 0x0000000002000000ull, false),
 		         "fight scene under HUD", false);
 		consider(cache.FindImageFromRange(kUfcSceneAddress, 0x0000000000870000ull, false),
@@ -1339,6 +1342,10 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 			// scanout image carries no current GPU contents (for example because the VideoOut
 			// descriptor's tile mode does not match the one the scene target was rendered
 			// with), the game's own scene target is the most recent complete frame.
+			// Per ledger.md, the real 1600x900 scene is at 0x116d300000, not at the
+			// recycled scratch address 0x1162c00000. Search the real scene first.
+			consider(cache.FindImageFromRange(kUfcRealSceneAddress, 0x0000000002000000ull, false),
+			         "real fight scene fallback", false);
 			consider(cache.FindImageFromRange(kUfcFightAddress, 0x0000000002000000ull, false),
 			         "fight scene fallback", false);
 			consider(cache.FindImageFromRange(kUfcSceneAddress, 0x0000000000870000ull, false),

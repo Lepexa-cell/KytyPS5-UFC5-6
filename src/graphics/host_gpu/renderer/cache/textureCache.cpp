@@ -1495,7 +1495,27 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			}
 			if (SameBacking(image.info, desc.info, exact_format) &&
 			    ImageViewOps::ViewCompatible(image.backing, desc.view_info)) {
-				result = id;
+				if (!result) {
+					result = id;
+				} else {
+					// One guest address can hold several images that all match the
+					// descriptor: a format-compatible re-declaration plus a
+					// stale/empty duplicate. Plain "last match wins" depended on
+					// page-table iteration order and let the empty duplicate
+					// displace the render target that had just produced the scene,
+					// which is the black-composite fault (Colour Pass #18 / EID
+					// 7952). Rank the candidates instead: a GPU-written render
+					// target beats a GPU-written image, which beats a render
+					// target without GPU contents, which beats a stale duplicate.
+					const auto&    existing        = m_slot_images[result];
+					const uint32_t candidate_rank    = (image.IsGpuModified() ? 2u : 0u) +
+					                                   (image.usage.render_target ? 1u : 0u);
+					const uint32_t existing_rank     = (existing.IsGpuModified() ? 2u : 0u) +
+					                                   (existing.usage.render_target ? 1u : 0u);
+					if (candidate_rank > existing_rank) {
+						result = id;
+					}
+				}
 			}
 		}
 
@@ -1661,30 +1681,51 @@ ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool e
 		}
 		matches.push_back(id);
 	}
+	// Descriptor-exact resolution (see ledger.md:586-589): replace the
+	// heuristics-based scoring with a strict, ordered preference that resolves
+	// the image alias at 0x1162c00000 unambiguously.
 	ImageId selected {};
-	int     best_score = -1;
 	for (const auto id: matches) {
 		const auto& image = m_slot_images[id];
-		int         score = 0;
-		if (image.info.data.size == size) {
-			score += 4;
+		const bool  size_ok          = image.info.data.size == size;
+		const bool  extent_ok        = image.info.extent.width > 0 && image.info.extent.height > 0;
+		const bool  gpu_modified     = image.IsGpuModified();
+		const bool  render_target    = image.usage.render_target;
+		const bool  valid_format     = image.backing.format != vk::Format::eUndefined;
+		const bool  render_tile      = image.info.tile_mode == Prospero::TileMode::kRenderTarget;
+		// Priority 1: exact descriptor match
+		if (size_ok && extent_ok && gpu_modified && render_target && valid_format && render_tile) {
+			selected = id;
+			break;
 		}
-		if (image.IsGpuModified()) {
-			score += 8;
+		// Priority 2: same but accepting any tile mode
+		if (size_ok && extent_ok && gpu_modified && render_target && valid_format && !render_tile &&
+		    selected == ImageId {}) {
+			selected = id;
 		}
-		if (image.usage.render_target) {
-			score += 16;
+		// Priority 3: size + extent only, with ranking
+		if (size_ok && extent_ok && !selected) {
+			selected = id;
+		} else if (size_ok && extent_ok) {
+			const auto&    current        = m_slot_images[selected];
+			const uint32_t candidate_rank = (gpu_modified ? 2u : 0u) + (render_target ? 1u : 0u);
+			const uint32_t current_rank   = (current.IsGpuModified() ? 2u : 0u) +
+			                                (current.usage.render_target ? 1u : 0u);
+			if (candidate_rank > current_rank) {
+				selected = id;
+			}
 		}
-		switch (image.backing.format) {
-			case vk::Format::eR8G8B8A8Unorm:
-			case vk::Format::eR8G8B8A8Srgb:
-			case vk::Format::eB8G8R8A8Unorm:
-			case vk::Format::eB8G8R8A8Srgb: score += 32; break;
-			default: break;
 		}
-		if (score > best_score) {
-			best_score = score;
-			selected   = id;
+	// Priority 4: if nothing matched on size, fall back to any GPU-modified image
+	// with a non-zero extent so the presenter still has *something* to show.
+	if (!selected) {
+		for (const auto id: matches) {
+			const auto& image = m_slot_images[id];
+			if (image.info.extent.width > 0 && image.info.extent.height > 0 &&
+			    image.IsGpuModified()) {
+				selected = id;
+				break;
+			}
 		}
 	}
 	if (selected && ensure_valid) {

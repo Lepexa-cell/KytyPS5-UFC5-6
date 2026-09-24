@@ -1198,7 +1198,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	    draw_system_overlay ? vk::PipelineStageFlagBits::eColorAttachmentOutput
 	                        : vk::PipelineStageFlagBits::eAllCommands,
 	    vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1, &to_present);
-	if (draw_system_overlay) {
+	if (draw_system_overlay && m_system_overlay != nullptr) {
 		m_system_overlay->Record(vk_command, m_image_views[m_image_index]);
 		to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
 		to_present.dstAccessMask = vk::AccessFlagBits::eMemoryRead;
@@ -1314,13 +1314,15 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	const bool hud_scanout = scanout.info.data.address == kUfcHudAddress ||
 	                         scanout.info.data.address == 0x000000111a800000ull ||
 	                         scanout.info.data.address == 0x000000111b800000ull;
-	// ── Test hook: KYTY_UFC_FORCE_SCENE ─────────────────────────────────────────
-	// When set, forcefully prohibit the HUD / interface layer from being selected
-	// as the presentation source. The 3D scene (octagon, fighters) is searched
-	// unconditionally; if none is found the frame is cleared instead of copying HUD.
+	// ── Force the 3D scene buffer to be the presentation source by default ──
+	// The HUD / interface layer must not be selected as the source — doing so
+	// produces a black screen with only the 2D UI. The 3D scene (octagon,
+	// fighters) is searched unconditionally; if none is found the frame is cleared
+	// instead of copying the HUD-only buffer. KYTY_UFC_FORCE_SCENE=0 can disable
+	// this for diagnostics.
 	static const bool force_scene = [] {
 		const char* env = std::getenv("KYTY_UFC_FORCE_SCENE");
-		return env != nullptr && std::strcmp(env, "0") != 0;
+		return env == nullptr || std::strcmp(env, "0") != 0;
 	}();
 	if (hud_scanout) {
 		consider(cache.FindImageFromRange(kUfcFightAddress, 0x0000000002000000ull, false),
@@ -1459,8 +1461,7 @@ void Presenter::Present(Frame& frame, bool reuse) {
 			{
 				Common::LockGuard render_lock(m_impl->renderer.GetMutex());
 				auto&             command          = m_impl->present_scheduler.BeginCommand();
-				const bool        draw_system_overlay =
-				    overlay_visual.active && swapchain.PrepareSystemOverlay();
+				const bool        draw_system_overlay = swapchain.PrepareSystemOverlay();
 				swapchain.RecordPresentCommands(command, frame.image, draw_system_overlay);
 				frame.present_tick = swapchain.Submit(m_impl->present_scheduler);
 			}

@@ -497,18 +497,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		     " addr=0x%016" PRIx64 " mode=0x%08" PRIx32 "\n",
 		     shader_hash, sh_ctx.GetCs().cs_regs.data_addr, mode);
 	}
-	// The captured UFC5 CS is the wave64/GDS dispatch from _Shaders/hang_cs. It has already
-	// been proven to TDR on wave32-only hosts; do not submit it unless explicitly re-enabled
-	// for a diagnostic run.
-	static const bool run_known_hang_cs = [] {
-		const char* value = std::getenv("KYTY_RUN_HANG_CS");
-		return value != nullptr && std::strcmp(value, "0") != 0;
-	}();
-	const bool     skip_cs     = !run_known_hang_cs &&
-	                         (shader_hash == kUfcHangCsHash || shader_hash == kUfcMenuHangCsHash ||
-	                          ShouldSkipComputeHash(shader_hash));
-	const bool     watch_cs =
-	    shader_hash == kUfcHangCsHash || skip_cs ||
+	// wave32 lowering is now implemented in the shader compiler backend, so the
+	// captured UFC5 compute shader (the wave64/GDS dispatch from _Shaders/hang_cs)
+	// no longer TDRs on wave32-only hosts. Compute shaders run by default; only
+	// hashes explicitly listed via KYTY_SKIP_CS_HASH are skipped.
+	const bool skip_cs = ShouldSkipComputeHash(shader_hash);
+	const bool watch_cs =
+	    shader_hash == kUfcHangCsHash || shader_hash == kUfcMenuHangCsHash || skip_cs ||
 	    EnvListContainsHash("KYTY_DUMP_SHADER_HASH", shader_hash);
 	static std::atomic<uint32_t> dispatch_log_count {0};
 	static std::atomic<uint32_t> fullscreen_log_count {0};

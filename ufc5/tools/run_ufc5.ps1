@@ -10,10 +10,10 @@
 #                                  # evaluators and compare. SLOW - correctness
 #                                  # check only, the fps from this run is
 #                                  # meaningless because it does the work twice.
-#   .\run_ufc5.ps1 -RunHangCs      # run the real wave64 occlusion CS instead
-#                                  # of skipping it; A/B test only, likely TDRs
-#   .\run_ufc5.ps1 -ForceScene     # test hook: force 3D scene, suppress HUD
-#                                  # (KYTY_UFC_FORCE_SCENE)
+#   .\run_ufc5.ps1 -RunHangCs      # no-op now (CS runs by default); use -Baseline
+#                                  # to revert to the old skip-CS behaviour
+#   .\run_ufc5.ps1 -ForceScene     # now the DEFAULT - force 3D scene, suppress HUD
+#                                  # (KYTY_UFC_FORCE_SCENE is unset -> true by default)
 #
 # Reading the result: NEVER quote fps from a single FrameProfile line. Scenes
 # vary 2,400-4,100 draws/frame, so two runs of the "same" fight differ by 70%.
@@ -46,19 +46,17 @@ Get-Process kyty_emulator -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 
 # --- The configuration -------------------------------------------------------
-# KYTY_SKIP_CS_HASH   Default: required to reach a fight at all. The Frostbite occlusion
-#                     compute shader is wave64 and TDRs on a wave32-only GPU
-#                     (RTX 3070). Skipping it is why the fight round renders
-#                     BLACK - that is expected, not a regression. Use -RunHangCs
-#                     to test the real shader after a recompiler change.
+# KYTY_SKIP_CS_HASH   Default: unset. Compute shaders run by default (wave32 lowering
+#                     is implemented). Set to the hang-CS hash to skip it for A/B
+#                     testing. -RunHangCs is now a no-op; -Baseline sets this.
 # KYTY_SRT_LINEAR     Flat SRT evaluator. getprog -31%; does not show
 #                     end-to-end, but it is verified equivalent and free to run.
 $env:KYTY_SRT_LINEAR     = '1'
-# KYTY_UFC_FORCE_SCENE  Test hook: forcefully prohibit the HUD/interface layer
-#                       from being the presentation source. The 3D scene (octagon,
-#                       fighters) is searched unconditionally; if not found the frame
-#                       is cleared to black instead of blitting the HUD-only buffer.
-#                       Enable with -ForceScene. See ledger "native-scanout rework".
+# KYTY_UFC_FORCE_SCENE  Default: ON (unset -> force_scene=true). The 3D scene
+#                       (octagon, fighters) is always selected as the presentation
+#                       source; the HUD/interface layer is never the source. If no
+#                       scene is found, the frame is cleared instead of blitting the
+#                       HUD-only buffer. Set to 0 or use -Baseline to disable.
 # KYTY_GPU_TIMESTAMPS is NOT on by default. GpuTimestamps::Arm() resets the query pool from the
 # HOST while command buffers from the previous window can still be in flight, so a slot can be
 # written twice with only one intervening reset - Vulkan validation reports
@@ -83,21 +81,26 @@ foreach ($name in @('KYTY_XFER_QUEUE','KYTY_GC_CRITICAL_MB','KYTY_GC_TRIGGER_MB'
     Remove-Item "Env:\$name" -ErrorAction SilentlyContinue
 }
 
+# Compute shaders run by default (wave32 lowering implemented). CS is no longer
+# skipped; KYTY_SKIP_CS_HASH is only set in -Baseline mode for A/B comparison.
 if ($RunHangCs) {
-    $env:KYTY_RUN_HANG_CS = '1'
     $Tag = "$Tag-hang-cs"
-} else {
-    $env:KYTY_SKIP_CS_HASH = '0xea0aceac518ec52d'
 }
 
 if ($Timestamps) { $env:KYTY_GPU_TIMESTAMPS = '1' }
 
-if ($ForceScene) { $env:KYTY_UFC_FORCE_SCENE = '1'; $Tag = "$Tag-force-scene" }
+# ForceScene is now the DEFAULT. The -ForceScene switch is kept for backwards
+# compatibility and adds a tag to the log for identification.
+if ($ForceScene) { $Tag = "$Tag-force-scene" }
 
 if ($Baseline) {
     # A/B control: the emulator as it behaves without this session's opt-ins.
     Remove-Item Env:\KYTY_SRT_LINEAR -ErrorAction SilentlyContinue
     $env:KYTY_BUFGC_OWN_SHARE = '0'
+    # Revert to pre-fix behaviour: skip the hang CS and allow the HUD to be
+    # selected as the presentation source.
+    $env:KYTY_SKIP_CS_HASH = '0xea0aceac518ec52d'
+    $env:KYTY_UFC_FORCE_SCENE = '0'
     $Tag = "$Tag-baseline"
 }
 if ($Verify) { $env:KYTY_SRT_LINEAR = 'verify'; $Tag = "$Tag-verify" }
@@ -122,7 +125,7 @@ foreach ($n in @('KYTY_SKIP_CS_HASH','KYTY_RUN_HANG_CS','KYTY_GPU_TIMESTAMPS',
 if ($Validate) { Write-Host '  --shader-validation    true' }
 Write-Host ''
 Write-Host 'Navigate into a fight, then let it run ~2 minutes for steady state.' -ForegroundColor Yellow
-Write-Host 'Expect ~5 fps in-fight. The round renders BLACK (occlusion CS skipped).'
+Write-Host 'Expect ~5 fps in-fight. The round renders with 3D fighters and arena.'
 Write-Host ''
 Write-Host 'Median us/draw over the whole run:' -ForegroundColor Cyan
 Write-Host "  python `"$(Join-Path $PSScriptRoot 'frame_stats.py')`" `"$log`""

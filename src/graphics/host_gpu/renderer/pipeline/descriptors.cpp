@@ -244,6 +244,9 @@ static void ValidateSampledDepthBinding(const ShaderRecompiler::IR::ImageResourc
 	if (resource_ok && encoding_ok && view_ok) {
 		return;
 	}
+	if (resource_ok && encoding_ok && !ImageViewOps::IsFormatDepthCompatible(view_format)) {
+		return;
+	}
 	const auto descriptor_pitch =
 	    TileGetTexturePitch(descriptor.Format(), static_cast<uint32_t>(descriptor.Width5()) + 1u,
 	                        descriptor.TileMode());

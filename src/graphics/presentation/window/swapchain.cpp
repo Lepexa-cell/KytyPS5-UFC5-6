@@ -1282,6 +1282,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 			return;
 		}
 		if (!allow_scanout_addr && (candidate.info.data.address == info.data.address ||
+		                            candidate.info.data.address == 0x0000001114000000ull ||
 		                            candidate.info.data.address == 0x000000111a800000ull ||
 		                            candidate.info.data.address == 0x000000111b800000ull)) {
 			return;

@@ -986,6 +986,16 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 	    .compute             = compute,
 	    .embedded_fetch      = embedded_fetch.loads.empty() ? nullptr : &embedded_fetch,
 	};
+	// Lower wave64 compute shaders to wave32 when the host doesn't support 64-wide
+	// subgroups. Running two wave32 subgroups per logical wave64 (lane_count=2) causes
+	// TDR timeouts on hosts like the RTX 4070 where the default subgroup size is 32.
+	// Lowering to a native wave32 avoids the split without changing semantics.
+	if (options.wave_size == 64u && compute != nullptr &&
+	    compute->host_subgroup_size == 32u) {
+		LOGF("%s wave32 lowering: lowering wave64 CS 0x%016" PRIx64 " to wave32\n",
+		     GetDumpLabel(options), options.shader_hash);
+		translate_options.wave_size = 32u;
+	}
 	const auto finish_value_ir = [&](IR::Program& ir) {
 		IR::RewriteToSsa(ir.blocks);
 		IR::ConstantPropagationPass(ir.blocks);

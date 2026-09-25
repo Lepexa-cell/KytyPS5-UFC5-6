@@ -657,6 +657,29 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
 		                                     view.layer_count},
 		              buffer.Handle());
+		// Clear alpha to 0 for UI/HUD surfaces to prevent text ghosting caused by
+		// stale pixel accumulation across frames. The PS5 compositor blends with
+		// premultiplied alpha, and a non-zero alpha from a previous frame bleeds
+		// into the next, leaving trailing ghosts on text and HUD elements.
+		if (target.desc.info.data.address == 0x000000111a800000ull ||
+		    target.desc.info.data.address == 0x000000111b800000ull) {
+			const ImageSubresourceRange ui_clear_range {
+			    view.base_level, view.level_count, view.base_layer, view.layer_count};
+			image.Transit(vk::ImageLayout::eTransferDstOptimal,
+			              vk::AccessFlagBits2::eTransferWrite, ui_clear_range,
+			              buffer.Handle());
+			const vk::ImageSubresourceRange vk_clear_range {
+			    vk::ImageAspectFlagBits::eColor, ui_clear_range.base_level,
+			    ui_clear_range.level_count, ui_clear_range.base_layer,
+			    ui_clear_range.layer_count};
+			vk::ClearColorValue ui_clear_value {};
+			ui_clear_value.float32[3] = 0.0f;
+			buffer.Handle().clearColorImage(image.backing.image,
+			                                vk::ImageLayout::eTransferDstOptimal,
+			                                &ui_clear_value, 1, &vk_clear_range);
+			image.Transit(layout, image.binding.attachment_access, ui_clear_range,
+			              buffer.Handle());
+		}
 		const auto extent       = target.Extent();
 		state.width             = std::min(state.width, extent.width);
 		state.height            = std::min(state.height, extent.height);

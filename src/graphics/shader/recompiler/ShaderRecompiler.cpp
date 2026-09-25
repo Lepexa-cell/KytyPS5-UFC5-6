@@ -999,7 +999,7 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 		const uint32_t host_size =
 		    compute != nullptr ? compute->host_subgroup_size
 		                        : options.host_subgroup_size;
-		if (host_size == 32u) {
+		if (host_size != 64u) {
 			LOGF("%s wave32 lowering: lowering wave64 CS 0x%016" PRIx64 " to wave32\n",
 			     GetDumpLabel(options), options.shader_hash);
 			translate_options.wave_size = 32u;

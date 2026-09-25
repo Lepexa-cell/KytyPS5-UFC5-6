@@ -1272,8 +1272,16 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	constexpr uint64_t kUfcSceneAddress = 0x0000001162c00000ull;
 	constexpr uint64_t kUfcRealSceneAddress = 0x000000116d300000ull;
 	static std::atomic<uint32_t> ufc_present_logs = 0;
+	// Composite / HDR formats that indicate a final 3D or compositor colour
+	// target rather than a raw RGBA8 HUD layer. These always take priority
+	// over non-composite sources.
+	const auto is_composite_format = [](vk::Format format) {
+		return format == vk::Format::eA2B10G10R10UnormPack32 ||
+		       format == vk::Format::eB10G11R11UfloatPack32;
+	};
+
 	const auto consider = [&](ImageId id, const char* tag, bool allow_scanout_addr) {
-		if (!id || source != &scanout) {
+		if (!id) {
 			return;
 		}
 		auto& candidate = cache.GetImage(id);
@@ -1288,6 +1296,17 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		if (!candidate.IsGpuModified() || candidate.backing.image == nullptr ||
 		    candidate.backing.extent.width < 512u || candidate.backing.extent.height < 288u) {
 			return;
+		}
+		const bool candidate_is_composite = is_composite_format(candidate.backing.format);
+		const bool source_is_composite    = is_composite_format(source->backing.format);
+		// Composite-format buffers always take priority: accept them as upgrades
+		// over any non-composite source (including the raw HUD scanout).
+		// Non-composite candidates only replace the initial scanout (first-match).
+		if (candidate_is_composite && source_is_composite) {
+			return; // Already have a composite source - keep the first one
+		}
+		if (!candidate_is_composite && source != &scanout) {
+			return; // Non-composite can't replace an already-accepted candidate
 		}
 		source = &candidate;
 		if (ufc_present_logs.fetch_add(1, std::memory_order_relaxed) < 12) {

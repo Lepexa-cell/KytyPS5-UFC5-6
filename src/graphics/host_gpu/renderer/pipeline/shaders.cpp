@@ -800,14 +800,6 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		comp_subgroup_size.requiredSubgroupSize = wave_size;
 		comp_shader_stage_info.pNext            = &comp_subgroup_size;
 	}
-	// When wave64 compute shaders are lowered to wave32 (host_subgroup_size == 32),
-	// request full subgroups so the driver pads the final partial group to a full
-	// 32-lane subgroup. This ensures ReadLane/WriteLane cross-lane operations never
-	// index an absent lane in the final wave.
-	if (graphics.compute_full_subgroups && wave_size == 32u) {
-		comp_shader_stage_info.flags |=
-		    vk::PipelineShaderStageCreateFlagBits::eRequireFullSubgroups;
-	}
 
 	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
 	AddLayoutBindings(descriptor_bindings, *input_info.stage.program,

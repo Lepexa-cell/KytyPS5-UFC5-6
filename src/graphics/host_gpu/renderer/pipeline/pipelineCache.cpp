@@ -421,6 +421,7 @@ struct PipelineCache::ProgramCache {
 			}
 		} else if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
 			options.wave_size = input_info.wave_size;
+			options.host_subgroup_size = input_info.host_subgroup_size;
 		}
 		const auto compile_start = Common::Timer::QueryPerformanceCounter();
 		auto translated = ShaderRecompiler::TranslateProgram(params.code, options);
@@ -693,7 +694,7 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs,
                                                const HW::ShaderRegisters&   sh,
                                                ShaderComputeInputInfo&      input_info) {
-	input_info.host_subgroup_size = m_graphics.SupportsComputeWave64() ? 64u : 32u;
+	input_info.host_subgroup_size = m_graphics.subgroup_size;
 	const auto        params      = PrepareProgram(regs, sh, input_info);
 	Common::LockGuard lock(m_mutex);
 	uint32_t          push_data_cursor = 0;

@@ -1268,7 +1268,6 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 
 	auto&  cache  = m_impl->renderer.GetTextureCache();
 	Image* source = &scanout;
-	constexpr uint64_t kUfcHudAddress   = 0x0000001114000000ull;
 	constexpr uint64_t kUfcFightAddress = 0x0000001168360000ull;
 	constexpr uint64_t kUfcSceneAddress = 0x0000001162c00000ull;
 	constexpr uint64_t kUfcRealSceneAddress = 0x000000116d300000ull;
@@ -1282,7 +1281,6 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 			return;
 		}
 		if (!allow_scanout_addr && (candidate.info.data.address == info.data.address ||
-		                            candidate.info.data.address == 0x0000001114000000ull ||
 		                            candidate.info.data.address == 0x000000111a800000ull ||
 		                            candidate.info.data.address == 0x000000111b800000ull)) {
 			return;
@@ -1313,8 +1311,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	// so native_scanout is true and hud_scanout was false — the fight-scene fallback was
 	// never consulted and the HUD-only buffer was blitted to the screen. Extend detection
 	// to the flip-buffer twin addresses so they are recognised as HUD sources.
-	const bool hud_scanout = scanout.info.data.address == kUfcHudAddress ||
-	                         scanout.info.data.address == 0x000000111a800000ull ||
+	const bool hud_scanout = scanout.info.data.address == 0x000000111a800000ull ||
 	                         scanout.info.data.address == 0x000000111b800000ull;
 	// ── Force the 3D scene buffer to be the presentation source by default ──
 	// The HUD / interface layer must not be selected as the source — doing so

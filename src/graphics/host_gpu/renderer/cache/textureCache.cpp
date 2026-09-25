@@ -1743,8 +1743,7 @@ void TextureCache::NotePresentableColor(const Image& image) {
 		return;
 	}
 	const auto address = image.info.data.address;
-	if (address == 0x0000001114000000ull || address == 0x000000111a800000ull ||
-	    address == 0x000000111b800000ull) {
+	if (address == 0x000000111a800000ull || address == 0x000000111b800000ull) {
 		return;
 	}
 	if (image.backing.extent.width < 512u || image.backing.extent.height < 288u) {

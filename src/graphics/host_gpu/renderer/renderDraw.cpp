@@ -661,8 +661,13 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		// stale pixel accumulation across frames. The PS5 compositor blends with
 		// premultiplied alpha, and a non-zero alpha from a previous frame bleeds
 		// into the next, leaving trailing ghosts on text and HUD elements.
-		if (target.desc.info.data.address == 0x000000111a800000ull ||
-		    target.desc.info.data.address == 0x000000111b800000ull) {
+		// Surface detection is format-based (RGBA8) rather than hardcoded addresses:
+		// any RGBA8 color target without a depth buffer is treated as a HUD layer.
+		if (depth.desc.info.data.Empty() &&
+		    (image.backing.format == vk::Format::eR8G8B8A8Unorm ||
+		     image.backing.format == vk::Format::eR8G8B8A8Srgb ||
+		     image.backing.format == vk::Format::eB8G8R8A8Unorm ||
+		     image.backing.format == vk::Format::eB8G8R8A8Srgb)) {
 			const ImageSubresourceRange ui_clear_range {
 			    view.base_level, view.level_count, view.base_layer, view.layer_count};
 			image.Transit(vk::ImageLayout::eTransferDstOptimal,

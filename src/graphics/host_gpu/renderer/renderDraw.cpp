@@ -668,22 +668,35 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		     image.backing.format == vk::Format::eR8G8B8A8Srgb ||
 		     image.backing.format == vk::Format::eB8G8R8A8Unorm ||
 		     image.backing.format == vk::Format::eB8G8R8A8Srgb)) {
-			const ImageSubresourceRange ui_clear_range {
-			    view.base_level, view.level_count, view.base_layer, view.layer_count};
-			image.Transit(vk::ImageLayout::eTransferDstOptimal,
-			              vk::AccessFlagBits2::eTransferWrite, ui_clear_range,
-			              buffer.Handle());
-			const vk::ImageSubresourceRange vk_clear_range {
-			    vk::ImageAspectFlagBits::eColor, ui_clear_range.base_level,
-			    ui_clear_range.level_count, ui_clear_range.base_layer,
-			    ui_clear_range.layer_count};
-			vk::ClearColorValue ui_clear_value {};
-			ui_clear_value.float32[3] = 0.0f;
-			buffer.Handle().clearColorImage(image.backing.image,
-			                                vk::ImageLayout::eTransferDstOptimal,
-			                                &ui_clear_value, 1, &vk_clear_range);
-			image.Transit(layout, image.binding.attachment_access, ui_clear_range,
-			              buffer.Handle());
+
+			// Clear UI/HUD surfaces only once per frame. AcquireRenderTargets is
+			// called for every draw pass; without this guard each pass re-clears
+			// the buffer to transparent, erasing all prior passes' UI (e.g.
+			// only the last icon survives). Track cleared addresses per-frame.
+			const uint32_t current_frame = static_cast<uint32_t>(m_context.GetGpu().GetFrameNum());
+			if (current_frame != m_cleared_ui_frame) {
+				m_cleared_ui_addresses.clear();
+				m_cleared_ui_frame = current_frame;
+			}
+			const uint64_t target_addr = target.desc.info.data.address;
+			if (m_cleared_ui_addresses.insert(target_addr).second) {
+				const ImageSubresourceRange ui_clear_range {
+				    view.base_level, view.level_count, view.base_layer, view.layer_count};
+				image.Transit(vk::ImageLayout::eTransferDstOptimal,
+				              vk::AccessFlagBits2::eTransferWrite, ui_clear_range,
+				              buffer.Handle());
+				const vk::ImageSubresourceRange vk_clear_range {
+				    vk::ImageAspectFlagBits::eColor, ui_clear_range.base_level,
+				    ui_clear_range.level_count, ui_clear_range.base_layer,
+				    ui_clear_range.layer_count};
+				vk::ClearColorValue ui_clear_value {};
+				ui_clear_value.float32[3] = 0.0f;
+				buffer.Handle().clearColorImage(image.backing.image,
+				                                vk::ImageLayout::eTransferDstOptimal,
+				                                &ui_clear_value, 1, &vk_clear_range);
+				image.Transit(layout, image.binding.attachment_access, ui_clear_range,
+				              buffer.Handle());
+			}
 		}
 		const auto extent       = target.Extent();
 		state.width             = std::min(state.width, extent.width);

@@ -123,6 +123,30 @@ void BufferCache::DrainDeferredReadbacks(bool force) {
 	m_deferred_readbacks = std::move(still_pending);
 }
 
+void BufferCache::QueueDeferredBufferDestroy(vk::Buffer buffer, VmaAllocation allocation) {
+	if (buffer != nullptr) {
+		m_deferred_buffers_to_destroy.push_back(
+		    {buffer, allocation, m_scheduler.CurrentTick()});
+	}
+}
+
+void BufferCache::DrainDeferredBufferDestroys() {
+	if (m_deferred_buffers_to_destroy.empty()) {
+		return;
+	}
+	std::vector<DeferredBuffer> still_pending;
+	for (auto& entry: m_deferred_buffers_to_destroy) {
+		if (!m_scheduler.IsFree(entry.submission_tick)) {
+			still_pending.push_back(std::move(entry));
+			continue;
+		}
+		if (entry.buffer != nullptr) {
+			vmaDestroyBuffer(m_graphics.allocator, entry.buffer, entry.allocation);
+		}
+	}
+	m_deferred_buffers_to_destroy = std::move(still_pending);
+}
+
 void BufferCache::EnsureCurrentForCpu(uint64_t vaddr, uint64_t size) {
 	if (vaddr == 0 || size == 0) {
 		return;
@@ -208,11 +232,20 @@ void BufferCache::DeleteBuffer(BufferId id) {
 	if (buffer == nullptr || buffer->is_deleted) {
 		return;
 	}
+	// Extract the VkBuffer/VmaAllocation before destroying the Buffer object.
+	// ~Buffer() will skip vmaDestroyBuffer because m_deferred_destroy is set —
+	// physical destruction is deferred until the GPU tick that may still
+	// reference the buffer has completed (see DrainDeferredBufferDestroys).
+	buffer->is_deleted = true;
+	buffer->SetDeferredDestroy();
+	QueueDeferredBufferDestroy(buffer->Handle(), buffer->Allocation());
 	Unregister(id);
 	if (m_scheduler.Active()) {
 		m_scheduler.DeferOperation([this, id] { m_slot_buffers.erase(id); });
+		m_scheduler.DeferOperation([this] { DrainDeferredBufferDestroys(); });
 	} else {
 		m_slot_buffers.erase(id);
+		DrainDeferredBufferDestroys();
 	}
 }
 
@@ -1225,17 +1258,21 @@ void BufferCache::RunGarbageCollector() {
 			EXIT("BufferCache: garbage collection retained GPU ownership\n");
 		}
 		m_memory_tracker.UntrackMemory(buffer.CpuAddress(), buffer.Size());
+		buffer.is_deleted = true;
+		buffer.SetDeferredDestroy();
+		// Extract the VkBuffer/VmaAllocation for deferred destruction. ~Buffer() will
+		// skip vmaDestroyBuffer because m_deferred_destroy is set — the physical
+		// vmaDestroyBuffer is deferred until the GPU tick that may still reference
+		// these buffers (from DownloadBufferMemory's GPU->staging copies recorded
+		// into the still-recording command buffer) has completed.
+		QueueDeferredBufferDestroy(buffer.Handle(), buffer.Allocation());
 		Unregister(id);
-		// DownloadBufferMemory() above recorded GPU->staging copies against these very
-		// buffers into the command buffer that is still recording, and the deferred
-		// readback path does not Finish() before returning. Destroying the VkBuffer here
-		// invalidates that command buffer ("VkBuffer ... was destroyed" /
-		// VUID-vkCmdPipelineBarrier-commandBuffer-recording) and loses the device. Retire
-		// on tick completion instead, exactly as DeleteBuffer() does.
 		if (m_scheduler.Active()) {
 			m_scheduler.DeferOperation([this, id] { m_slot_buffers.erase(id); });
+			m_scheduler.DeferOperation([this] { DrainDeferredBufferDestroys(); });
 		} else {
 			m_slot_buffers.erase(id);
+			DrainDeferredBufferDestroys();
 		}
 	}
 }

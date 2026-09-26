@@ -1333,6 +1333,17 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		return format == vk::Format::eA2B10G10R10UnormPack32 ||
 		       format == vk::Format::eB10G11R11UfloatPack32;
 	};
+	// 3D scene addresses have ABSOLUTE priority over any HUD composite: the
+	// scene is the actual frame content (fighters, octagon, arena), while the
+	// HUD layer is transparent and only carries the 2D interface. When the
+	// game registers an SDR scanout (attribute=58), the backing scene at
+	// kUfcSceneAddress (0x1162c00000) or kUfcRealSceneAddress (0x116d300000)
+	// is the true present source. kUfcRealSceneAddress is searched first in
+	// the consider() chain, so "keep the first scene" preserves that ranking.
+	const auto is_scene_address = [](uint64_t addr) {
+		return addr == kUfcSceneAddress || addr == kUfcRealSceneAddress ||
+		       addr == kUfcFightAddress;
+	};
 
 	const auto consider = [&](ImageId id, const char* tag, bool allow_scanout_addr) {
 		if (!id) {
@@ -1353,6 +1364,26 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		}
 		const bool candidate_is_composite = is_composite_format(candidate.backing.format);
 		const bool source_is_composite    = is_composite_format(source->backing.format);
+		const bool candidate_is_scene     = is_scene_address(candidate.info.data.address);
+		const bool source_is_scene        = is_scene_address(source->info.data.address);
+		// Scene buffers override ANY existing source — including a composite HUD
+		// scanout that was selected first. This fixes the black screen where the
+		// transparent HUD-only buffer was presented instead of the 3D scene.
+		if (candidate_is_scene && source_is_scene) {
+			return; // Already have a scene source - keep the first one
+		}
+		if (candidate_is_scene) {
+			source = &candidate;
+			if (ufc_present_logs.fetch_add(1, std::memory_order_relaxed) < 12) {
+				LOGF("UFC 5 present %s: fmt=%d gpu=%d rt=%d storage=%d extent=%ux%u "
+				     "addr=0x%016" PRIx64 " scanout=0x%016" PRIx64 "\n",
+				     tag, static_cast<int>(candidate.backing.format),
+				     candidate.IsGpuModified() ? 1 : 0, candidate.usage.render_target ? 1 : 0,
+				     candidate.usage.storage ? 1 : 0, candidate.backing.extent.width,
+				     candidate.backing.extent.height, candidate.info.data.address, info.data.address);
+			}
+			return;
+		}
 		// Composite-format buffers always take priority: accept them as upgrades
 		// over any non-composite source (including the raw HUD scanout).
 		// Non-composite candidates only replace the initial scanout (first-match).

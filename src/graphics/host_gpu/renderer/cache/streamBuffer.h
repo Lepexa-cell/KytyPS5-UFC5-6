@@ -48,13 +48,20 @@ public:
 	[[nodiscard]] bool               IsCoherent() const noexcept { return m_coherent; }
 	[[nodiscard]] MemoryUsage        Usage() const noexcept { return m_usage; }
 	[[nodiscard]] uint64_t           CpuAddress() const noexcept { return m_cpu_address; }
-	[[nodiscard]] vk::DeviceAddress BufferDeviceAddress() const noexcept;
+		[[nodiscard]] vk::DeviceAddress BufferDeviceAddress() const noexcept;
+	[[nodiscard]] VmaAllocation     Allocation() const noexcept { return m_allocation; }
 	[[nodiscard]] uint64_t           Offset(uint64_t address) const noexcept {
 		return address - m_cpu_address;
 	}
 	[[nodiscard]] bool IsInBounds(uint64_t address, uint64_t size) const noexcept;
 	void               IncreaseStreamScore(int score) noexcept { stream_score += score; }
 	[[nodiscard]] int  StreamScore() const noexcept { return stream_score; }
+	// Marks this buffer as pending deferred destruction so that ~Buffer()
+	// skips the immediate vmaDestroyBuffer call. The VkBuffer/VmaAllocation
+	// pair is extracted and queued for physical destruction only after the
+	// GPU has finished all submissions that reference it (see BufferCache
+	// m_deferred_buffers_to_destroy + DrainDeferredBufferDestroys).
+	void               SetDeferredDestroy() noexcept { m_deferred_destroy = true; }
 	void               Write(uint64_t offset, const void* source, uint64_t size);
 	void               Flush(uint64_t offset, uint64_t size);
 	void               Invalidate(uint64_t offset, uint64_t size);
@@ -103,6 +110,7 @@ private:
 	uint64_t                      m_size;
 	bool                          m_coherent = false;
 	std::span<uint8_t>            m_mapped;
+	bool                          m_deferred_destroy = false;
 };
 
 class StreamBuffer final: public Buffer {

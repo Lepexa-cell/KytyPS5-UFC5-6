@@ -541,7 +541,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		     " limit[0]=%u original=%u\n",
 		     shader_hash, work_limit, original_limit);
 	}
-	uint32_t gds_chunk = shader_hash == kUfcHangCsHash ? 4u : 0u;
+	// GDS work is emulated via per-chunk host-visible writes + GPU dispatch.
+	// A chunk size of 4 produced ~1400 sequential vkQueueSubmit calls for the
+	// 5655-item UFC5 hang CS, each with a full GPU fence wait — cumulatively
+	// ~2.36 s of gpuwait, exceeding the Windows TDR limit (2000 ms) and
+	// triggering ErrorDeviceLost. 256 collapses that to ~23 submits, each
+	// completing in a few milliseconds, keeping total gpuwait well under 100 ms.
+	uint32_t gds_chunk = shader_hash == kUfcHangCsHash ? 256u : 0u;
 	if (shader_hash == kUfcHangCsHash) {
 		TryParseEnvU32("KYTY_GDS_CHUNK", gds_chunk);
 	}
@@ -868,13 +874,22 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		     " items=%u start=%u chunk=%u submits=%u original_limit=%u\n",
 		     shader_hash, work_limit, start, gds_chunk, chunk_count, original_limit);
 		uint32_t chunk_index = 0;
+		// Batch all GDS chunks into a single command buffer submission.
+		// Previously each micro-chunk triggered a separate Finish() that
+		// issued vkQueueSubmit + a full GPU fence wait, producing ~1414
+		// sequential submits for the 5655-item UFC5 hang CS. The cumulative
+		// gpuwait reached 2.36 s, exceeding the Windows TDR limit (2000 ms)
+		// and causing ErrorDeviceLost. With chunk=256 there are only ~23
+		// dispatches, all recorded into one command buffer. The barriers
+		// inside FillGdsDword (Buffer::Fill) and record_dispatch
+		// (ShaderWriteHazardBarrier / ShaderAccessBarrier) guarantee correct
+		// ordering between micro-chunks without per-chunk host-side sync.
 		while (start < work_limit) {
 			const uint32_t end = std::min(start + gds_chunk, work_limit);
 			FillGdsDword(gds, 0, end);
 			FillGdsDword(gds, 1, start);
 			const auto chunk_t0 = std::chrono::steady_clock::now();
 			record_dispatch();
-			m_context.GetCommandScheduler().Finish("gds-chunk");
 			const double chunk_ms = std::chrono::duration<double, std::milli>(
 			                            std::chrono::steady_clock::now() - chunk_t0)
 			                            .count();
@@ -888,6 +903,9 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		}
 		FillGdsDword(gds, 0, original_limit != 0 ? original_limit : work_limit);
 		FillGdsDword(gds, 1, work_limit);
+		// Single host-side sync point for the entire batched dispatch —
+		// replaces the per-chunk Finish("gds-chunk") that caused the TDR.
+		m_context.GetCommandScheduler().Finish("gds-chunk");
 		LOGF("GraphicsRenderDispatchDirect: GDS chunk done hash=0x%016" PRIx64
 		     " chunks=%u items=%u\n",
 		     shader_hash, chunk_index, work_limit);

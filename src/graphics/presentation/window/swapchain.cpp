@@ -55,6 +55,27 @@ bool IsPacked10Unorm(vk::Format format) {
 	       format == vk::Format::eA2B10G10R10UnormPack32;
 }
 
+// HDR composite formats that UFC 5's render/composite passes produce as 32-bit
+// packed colour targets. B10G11R11 is a shared-exponent float; A2B10G10R10 is
+// a 2-bit-alpha 10-bit-unorm. Both are 32-bit words, but their bit layouts differ
+// from each other and from A2R10G10B10, so they are NOT bit-compatible for
+// copyImage. Vulkan's vkCmdBlitImage performs a correct colour-space/conversion
+// between any of these and a standard 8-bit UNORM/SRGB swapchain format.
+bool IsHdrCompositeFormat(vk::Format format) {
+	return format == vk::Format::eB10G11R11UfloatPack32 ||
+	       format == vk::Format::eA2B10G10R10UnormPack32 ||
+	       format == vk::Format::eA2R10G10B10UnormPack32;
+}
+
+// Returns true when the two formats have compatible 32-bit packed layouts that
+// permit a bit-exact copyImage without colour conversion. A2R10G10B10 and
+// A2B10G10R10 share the same 10-bit-per-channel width (only the R/B lanes swap),
+// so a copyImage + an R↔B swizzle view handles both. B10G11R11 has a
+// fundamentally different bit-packing (shared exponent) and is excluded.
+bool PackedFormatsBitCompatible(vk::Format src, vk::Format dst) {
+	return src == dst || (IsPacked10Unorm(src) && IsPacked10Unorm(dst));
+}
+
 [[nodiscard]] uint8_t Unorm10To8(uint32_t value) {
 	return static_cast<uint8_t>((value * 255u + 511u) / 1023u);
 }
@@ -796,8 +817,11 @@ void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
 	// Packed 10-bit VideoOut is an interpretation of the guest bits, regardless of
 	// which compatible storage view/backing wrote them. A blit converts colours and
 	// would undo that interpretation. Vulkan permits a bit copy between this pair.
-	if (source.backing.format == image.format ||
-	    (IsPacked10Unorm(source.backing.format) && IsPacked10Unorm(image.format))) {
+	// B10G11R11_UFLOAT_PACK32 and A2B10G10R10_UNORM_PACK32 are 32-bit HDR formats
+	// whose bit layouts differ from A2R10G10B10, so they require a real
+	// vkCmdBlitImage with format conversion (VK_FILTER_LINEAR) to the swapchain's
+	// 8-bit UNORM/SRGB target, not a raw bit copy.
+	if (PackedFormatsBitCompatible(source.backing.format, image.format)) {
 		vk::ImageCopy copy {};
 		copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, layers};
 		copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, layers};
@@ -805,13 +829,17 @@ void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
 		command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, image.image,
 		                  vk::ImageLayout::eTransferDstOptimal, copy);
 	} else {
+		// vkCmdBlitImage with VK_FILTER_LINEAR performs hardware colour-space
+		// and type conversion (e.g. B10G11R11 float → B8G8R8A8 UNORM). This
+		// is the path that resolves the VideoOut present format mismatch
+		// (backing=122, attribute=58) that previously produced a black screen.
 		vk::ImageBlit blit {};
 		blit.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, layers};
 		blit.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, layers};
 		blit.srcOffsets[1]  = {static_cast<int32_t>(width), static_cast<int32_t>(height), 1};
 		blit.dstOffsets[1]  = {static_cast<int32_t>(width), static_cast<int32_t>(height), 1};
 		command.blitImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, image.image,
-		                  vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eNearest);
+		                  vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
 	}
 	Transit(command, vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead);
 }
@@ -1132,12 +1160,38 @@ bool Swapchain::PrepareSystemOverlay() {
 
 void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& source,
                                       bool draw_system_overlay) {
+	// Ensure the source texture is in TRANSFER_SRC_OPTIMAL for the blit below.
+	// When the backing format is an HDR composite (B10G11R11=122, A2B10G10R10=64)
+	// that mismatches the VideoOut attribute format (A2R10G10B10=58), a hard EXIT
+	// would block present and produce a black screen. Instead, transition with
+	// vkCmdPipelineBarrier2 using the real backing.layout/format already baked
+	// into the VkImage at creation time by Frame::Configure.
+	auto vk_command = command.Handle();
 	if (source.state.layout != vk::ImageLayout::eTransferSrcOptimal) {
-		EXIT("invalid prepared presentation image, vk_image=%p layout=%d\n",
-		     static_cast<void*>(source.image), static_cast<int>(source.state.layout));
+		vk::ImageMemoryBarrier2 src_barrier {};
+		src_barrier.srcStageMask      = source.state.pl_stage;
+		src_barrier.srcAccessMask     = source.state.access_mask;
+		src_barrier.dstStageMask      = vk::PipelineStageFlagBits2::eTransfer;
+		src_barrier.dstAccessMask     = vk::AccessFlagBits2::eTransferRead;
+		src_barrier.oldLayout         = source.state.layout;
+		src_barrier.newLayout         = vk::ImageLayout::eTransferSrcOptimal;
+		src_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		src_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		src_barrier.image             = source.image;
+		src_barrier.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
+		src_barrier.subresourceRange.baseMipLevel   = 0;
+		src_barrier.subresourceRange.levelCount     = 1;
+		src_barrier.subresourceRange.baseArrayLayer = 0;
+		src_barrier.subresourceRange.layerCount     = 1;
+		vk::DependencyInfo dep {};
+		dep.imageMemoryBarrierCount = 1;
+		dep.pImageMemoryBarriers    = &src_barrier;
+		vk_command.pipelineBarrier2(dep);
+		source.state = {vk::PipelineStageFlagBits2::eTransfer,
+		                vk::AccessFlagBits2::eTransferRead,
+		                vk::ImageLayout::eTransferSrcOptimal};
 	}
 	EXIT_IF(m_image_index >= m_images.size());
-	auto vk_command = command.Handle();
 
 	vk::ImageMemoryBarrier to_transfer {};
 	to_transfer.sType                           = vk::StructureType::eImageMemoryBarrier;
@@ -1387,6 +1441,13 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	// The scanout image is pinned to the game's registered VideoOut pixel_format at
 	// creation (TextureCache::RegisterVideoOutSurface), so image.backing.format is
 	// already the authoritative display layout - no per-present format override.
+	// When the game registers an SDR attribute (e.g. A2R10G10B10=58) but the
+	// actual backing Vulkan image uses an HDR composite format (B10G11R11=122),
+	// we keep the backing format for the intermediate frame image. CopyFrom will
+	// issue a vkCmdBlitImage with VK_FILTER_LINEAR to perform the hardware
+	// colour-space conversion into the swapchain's 8-bit UNORM/SRGB target.
+	// The frame format is NEVER reset to the SDR attribute — that would cause a
+	// bit-copy of mismatched bit layouts and produce a black screen.
 	auto frame_format = image.backing.format;
 	switch (frame_format) {
 		case vk::Format::eR8G8B8A8Srgb: frame_format = vk::Format::eR8G8B8A8Unorm; break;
@@ -1397,9 +1458,11 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		static std::atomic<uint32_t> mismatch_logs = 0;
 		if (mismatch_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
 			LOGF("VideoOut present format mismatch: attribute=%d backing=%d extent=%ux%u "
-			     "addr=0x%016" PRIx64 "\n",
+			     "addr=0x%016" PRIx64 " hdr=%d blit=%s\n",
 			     static_cast<int>(info.pixel_format), static_cast<int>(image.backing.format),
-			     image.backing.extent.width, image.backing.extent.height, info.data.address);
+			     image.backing.extent.width, image.backing.extent.height, info.data.address,
+			     IsHdrCompositeFormat(image.backing.format) ? 1 : 0,
+			     PackedFormatsBitCompatible(info.pixel_format, image.backing.format) ? "copy" : "blit");
 		}
 	}
 	frame->Configure(m_impl->window.graphic_ctx,
